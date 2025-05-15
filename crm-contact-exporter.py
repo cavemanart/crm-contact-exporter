@@ -2,12 +2,10 @@ import os
 import csv
 import streamlit as st
 import requests
+from requests.auth import HTTPBasicAuth
 
-# File to store progress
 PROGRESS_FILE = "progress.txt"
 CSV_FILE = "contacts.csv"
-
-# ----- Helper Functions -----
 
 def load_last_page():
     if os.path.exists(PROGRESS_FILE):
@@ -26,11 +24,8 @@ def reset_progress():
         os.remove(CSV_FILE)
 
 def fetch_contacts(api_key, page, limit):
-    headers = {
-        "Authorization": f"Basic {api_key}:"
-    }
     url = f"https://api.followupboss.com/v1/people?page={page}&limit={limit}"
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, auth=HTTPBasicAuth(api_key, ""), headers={"Accept": "application/json"})
     if response.status_code != 200:
         st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
         return []
@@ -38,7 +33,7 @@ def fetch_contacts(api_key, page, limit):
     return data.get("people", [])
 
 def format_contact(contact):
-    address = contact.get("primaryAddress", {}) or {}
+    address = contact.get("primaryAddress") or {}
     return {
         "First Name": contact.get("firstName", ""),
         "Last Name": contact.get("lastName", ""),
@@ -62,8 +57,6 @@ def export_to_csv(contacts, filename):
         if not file_exists:
             writer.writeheader()
         writer.writerows(contacts)
-
-# ----- Streamlit App -----
 
 def main():
     st.title("Follow Up Boss Contact Exporter")
@@ -108,12 +101,14 @@ def main():
             progress_bar.progress(progress)
 
             if len(contacts) < batch_size:
-                break  # No more data
+                break
 
-        st.success(f"Exported {contacts_exported} contacts to {CSV_FILE}.")
-
-        with open(CSV_FILE, "rb") as f:
-            st.download_button("Download CSV", data=f, file_name=CSV_FILE, mime="text/csv")
+        if contacts_exported > 0:
+            st.success(f"Exported {contacts_exported} contacts to {CSV_FILE}.")
+            with open(CSV_FILE, "rb") as f:
+                st.download_button("Download CSV", data=f, file_name=CSV_FILE, mime="text/csv")
+        else:
+            st.warning("No contacts exported.")
 
 if __name__ == "__main__":
     main()
