@@ -1,5 +1,6 @@
+import os
 import csv
-import io
+import base64
 import streamlit as st
 import requests
 from simple_salesforce import Salesforce
@@ -17,8 +18,9 @@ def load_config():
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
+    token = base64.b64encode(f"{api_key}:".encode()).decode()
     headers = {
-        "Authorization": f"Basic {api_key}:"
+        "Authorization": f"Basic {token}"
     }
     contacts = []
     page = 1
@@ -62,27 +64,26 @@ def get_contacts_from_salesforce(username, password, security_token):
 
 # ----------- CSV Export -------------
 
-def export_contacts_to_csv(contacts):
+def export_contacts_to_csv(contacts, filename):
     if not contacts:
         st.warning("No contacts to export.")
         return
-
     keys = set()
     for c in contacts:
         keys.update(c.keys())
     keys = list(keys)
-
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=keys)
-    writer.writeheader()
-    writer.writerows(contacts)
-
-    st.download_button(
-        label="Download contacts as CSV",
-        data=output.getvalue(),
-        file_name="contacts.csv",
-        mime="text/csv"
-    )
+    with open(filename, 'w', newline='', encoding='utf-8') as f:
+        dict_writer = csv.DictWriter(f, fieldnames=keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(contacts)
+    st.success(f"Exported {len(contacts)} contacts to {filename}")
+    with open(filename, 'rb') as f:
+        st.download_button(
+            label="Download contacts.csv",
+            data=f,
+            file_name=filename,
+            mime='text/csv'
+        )
 
 # ----------- Streamlit UI -------------
 
@@ -113,7 +114,8 @@ def main():
                 st.error("Unsupported CRM selected.")
                 return
 
-            export_contacts_to_csv(contacts)
+            # Export to CSV file named contacts.csv in current dir
+            export_contacts_to_csv(contacts, "contacts.csv")
 
 if __name__ == "__main__":
     main()
