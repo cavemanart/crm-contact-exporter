@@ -33,7 +33,9 @@ def fetch_contacts(api_key, page, limit):
     return data.get("people", [])
 
 def format_contact(contact):
-    address = contact.get("primaryAddress") or {}
+    address = {}
+    if contact.get("addresses"):
+        address = contact["addresses"][0]  # Use first address only
     return {
         "First Name": contact.get("firstName", ""),
         "Last Name": contact.get("lastName", ""),
@@ -41,11 +43,11 @@ def format_contact(contact):
         "Phone": contact.get("phones", [{}])[0].get("value", "") if contact.get("phones") else "",
         "Tags": ", ".join(contact.get("tags", [])),
         "Source": contact.get("source", ""),
-        "Created At": contact.get("createdAt", ""),
+        "Created At": contact.get("created", ""),
         "Street": address.get("street", ""),
         "City": address.get("city", ""),
         "State": address.get("state", ""),
-        "Zip": address.get("zip", "")
+        "Zip": address.get("code", "")
     }
 
 def export_to_csv(contacts, filename):
