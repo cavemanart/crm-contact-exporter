@@ -1,22 +1,23 @@
 import os
 import csv
-import json
-import base64
 import streamlit as st
 import requests
 
-PROGRESS_FILE = "progress.json"
-CSV_FILE = "contacts_export.csv"
+# File to store progress
+PROGRESS_FILE = "progress.txt"
+CSV_FILE = "contacts.csv"
 
-def save_progress(progress_data):
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress_data, f)
+# ----- Helper Functions -----
 
-def load_progress():
+def load_last_page():
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, "r") as f:
-            return json.load(f)
-    return {}
+            return int(f.read().strip())
+    return 1
+
+def save_last_page(page):
+    with open(PROGRESS_FILE, "w") as f:
+        f.write(str(page))
 
 def reset_progress():
     if os.path.exists(PROGRESS_FILE):
@@ -24,96 +25,95 @@ def reset_progress():
     if os.path.exists(CSV_FILE):
         os.remove(CSV_FILE)
 
-def export_contacts_to_csv(contacts, append=True):
-    if not contacts:
-        st.warning("No contacts to export.")
-        return
-
-    headers = ["First Name", "Last Name", "Email", "Phone", "Address", "Tags", "Source", "Created At"]
-
-    formatted = []
-    for c in contacts:
-        formatted.append({
-            "First Name": c.get("firstName", ""),
-            "Last Name": c.get("lastName", ""),
-            "Email": c.get("emails", [{}])[0].get("value", "") if c.get("emails") else "",
-            "Phone": c.get("phones", [{}])[0].get("value", "") if c.get("phones") else "",
-            "Address": c.get("primaryAddress", {}).get("street", ""),
-            "Tags": ", ".join(c.get("tags", [])),
-            "Source": c.get("source", ""),
-            "Created At": c.get("createdAt", "")
-        })
-
-    mode = 'a' if append and os.path.exists(CSV_FILE) else 'w'
-    with open(CSV_FILE, mode, newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        if mode == 'w':
-            writer.writeheader()
-        writer.writerows(formatted)
-
-def get_followupboss_contacts(api_key, start_page=1):
-    contacts = []
-    page = start_page
-    batch_size = 100
-    has_next = True
-    total_fetched = 0
-
-    auth_string = f"{api_key}:".encode("utf-8")
+def fetch_contacts(api_key, page, limit):
     headers = {
-        "Authorization": f"Basic {base64.b64encode(auth_string).decode('utf-8')}"
+        "Authorization": f"Basic {api_key}:"
+    }
+    url = f"https://api.followupboss.com/v1/people?page={page}&limit={limit}"
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+        return []
+    data = response.json()
+    return data.get("people", [])
+
+def format_contact(contact):
+    address = contact.get("primaryAddress", {}) or {}
+    return {
+        "First Name": contact.get("firstName", ""),
+        "Last Name": contact.get("lastName", ""),
+        "Email": contact.get("emails", [{}])[0].get("value", "") if contact.get("emails") else "",
+        "Phone": contact.get("phones", [{}])[0].get("value", "") if contact.get("phones") else "",
+        "Tags": ", ".join(contact.get("tags", [])),
+        "Source": contact.get("source", ""),
+        "Created At": contact.get("createdAt", ""),
+        "Street": address.get("street", ""),
+        "City": address.get("city", ""),
+        "State": address.get("state", ""),
+        "Zip": address.get("zip", "")
     }
 
-    with st.spinner("Fetching contacts..."):
-        progress = st.progress(0)
-        while has_next:
-            url = f"https://api.followupboss.com/v1/people?page={page}&limit={batch_size}"
-            response = requests.get(url, headers=headers)
+def export_to_csv(contacts, filename):
+    if not contacts:
+        return
+    file_exists = os.path.isfile(filename)
+    with open(filename, "a", newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=contacts[0].keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(contacts)
 
-            if response.status_code != 200:
-                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
-                return
-
-            data = response.json()
-            batch = data.get("people", [])
-            if not batch:
-                break
-
-            export_contacts_to_csv(batch)
-            total_fetched += len(batch)
-            progress.progress(min(1.0, total_fetched / 13000))
-
-            page += 1
-            save_progress({"page": page})
-            has_next = data.get("pagination", {}).get("nextPage", False)
+# ----- Streamlit App -----
 
 def main():
-    st.title("CRM Contact Exporter")
+    st.title("Follow Up Boss Contact Exporter")
 
-    crm_choice = st.selectbox("Select CRM", ["Follow Up Boss"])  # Add HubSpot and Salesforce later
+    st.markdown("This tool pulls your Follow Up Boss contacts and exports them to a CSV.")
+    api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 
-    api_key = st.text_input("API Key", type="password")
-    progress_state = load_progress()
-    resume = False
-    if progress_state.get("page"):
-        resume = st.checkbox(f"Resume from page {progress_state['page']}?", value=True)
+    reset = st.checkbox("Start over (clear progress and CSV)")
+    if reset:
+        reset_progress()
+        st.success("Progress and previous CSV removed.")
 
-    reset = st.checkbox("Start fresh?")
+    contact_limit = st.number_input("Number of contacts to export this session", min_value=100, max_value=10000, value=500, step=100)
+
     if st.button("Start Export"):
-        if reset:
-            reset_progress()
+        if not api_key:
+            st.error("API key is required.")
+            return
 
-        if api_key:
-            start_page = progress_state.get("page", 1) if resume else 1
-            get_followupboss_contacts(api_key, start_page=start_page)
-            st.success("Contacts export complete.")
+        page = load_last_page()
+        batch_size = 100
+        total_fetched = 0
 
-            if os.path.exists(CSV_FILE):
-                with open(CSV_FILE, "rb") as f:
-                    st.download_button("Download CSV", f, file_name="contacts_export.csv", mime="text/csv")
-            else:
-                st.error("No CSV file found. Export may have failed.")
-        else:
-            st.error("Please enter your API key.")
+        progress_bar = st.progress(0)
+        contacts_exported = 0
+
+        while total_fetched < contact_limit:
+            contacts = fetch_contacts(api_key, page, batch_size)
+            if not contacts:
+                st.info("No more contacts to fetch.")
+                break
+
+            formatted_contacts = [format_contact(c) for c in contacts]
+            export_to_csv(formatted_contacts, CSV_FILE)
+
+            total_fetched += len(contacts)
+            page += 1
+            save_last_page(page)
+
+            contacts_exported += len(contacts)
+            progress = min(contacts_exported / contact_limit, 1.0)
+            progress_bar.progress(progress)
+
+            if len(contacts) < batch_size:
+                break  # No more data
+
+        st.success(f"Exported {contacts_exported} contacts to {CSV_FILE}.")
+
+        with open(CSV_FILE, "rb") as f:
+            st.download_button("Download CSV", data=f, file_name=CSV_FILE, mime="text/csv")
 
 if __name__ == "__main__":
     main()
