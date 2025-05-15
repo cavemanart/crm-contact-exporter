@@ -1,95 +1,112 @@
-from datetime import date
-
-import requests
-from hubspot import HubSpot
-import pandas as pd
-from simple_salesforce import Salesforce
-
 import os
-from dotenv import load_dotenv, find_dotenv
+import csv
+import streamlit as st
+import requests
+from simple_salesforce import Salesforce
+from hubspot import HubSpot
+from hubspot.crm.contacts import ApiException
 
-load_dotenv(find_dotenv())
+# ----------- Helper functions -------------
 
+def save_config(config):
+    st.session_state['config'] = config
 
-today = date.today()
+def load_config():
+    return st.session_state.get('config', {})
 
+# ----------- CRM Export Functions -------------
 
-def get_zoho_access_token():
-    payload = {'grant_type': 'authorization_code',
-               'client_id': os.environ.get("ZOHO_CLIENT_ID"),
-               'client_secret': os.environ.get("ZOHO_CLIENT_SECRET"),
-               'redirect_uri': os.environ.get("ZOHO_REDIRECT_URI"),
-               'code': os.environ.get("ZOHO_CODE")}
-
-    response = requests.request("POST", os.environ.get("ZOHO_ACCESS_TOKEN_URL"), headers={}, data=payload, files=[])
-
-    data = response.json()
-
-    access_token = data['access_token']
-
-    return access_token
-
-
-def get_contacts_from_zoho():
-    access_token = get_zoho_access_token()
-
+def get_contacts_from_followupboss(api_key):
     headers = {
-        'Authorization': f'Zoho-oauthtoken {access_token}'
+        "Authorization": f"Token token={api_key}"
+    }
+    contacts = []
+    page = 1
+    while True:
+        url = f"https://api.followupboss.com/v1/people?page={page}&limit=100"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+            break
+        data = response.json()
+        contacts.extend(data.get('people', []))
+        if not data.get('pagination', {}).get('nextPage'):
+            break
+        page += 1
+    return contacts
+
+def get_contacts_from_hubspot(api_key):
+    client = HubSpot(api_key=api_key)
+    all_contacts = []
+    after = None
+    while True:
+        try:
+            if after:
+                page = client.crm.contacts.basic_api.get_page(limit=100, after=after)
+            else:
+                page = client.crm.contacts.basic_api.get_page(limit=100)
+            all_contacts.extend(page.results)
+            after = page.paging.next.after if page.paging else None
+            if not after:
+                break
+        except ApiException as e:
+            st.error(f"HubSpot API error: {e}")
+            break
+    return [contact.to_dict() for contact in all_contacts]
+
+def get_contacts_from_salesforce(username, password, security_token):
+    sf = Salesforce(username=username, password=password, security_token=security_token)
+    query = "SELECT Id, FirstName, LastName, Email, Phone FROM Contact"
+    results = sf.query_all(query)
+    return results['records']
+
+# ----------- CSV Export -------------
+
+def export_contacts_to_csv(contacts, filename):
+    if not contacts:
+        st.warning("No contacts to export.")
+        return
+    keys = set()
+    for c in contacts:
+        keys.update(c.keys())
+    keys = list(keys)
+    with open(filename, 'w', newline='', encoding='utf-8') as f:
+        dict_writer = csv.DictWriter(f, fieldnames=keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(contacts)
+    st.success(f"Exported {len(contacts)} contacts to {filename}")
+
+# ----------- Streamlit UI -------------
+
+def main():
+    st.title("CRM Contact Exporter")
+
+    presets = {
+        "Follow Up Boss": ["API Key"],
+        "HubSpot": ["API Key"],
+        "Salesforce": ["Username", "Password", "Security Token"]
     }
 
-    response = requests.request("GET", os.environ.get("ZOHO_CONTACTS_URL"), headers=headers, data={}, files=[])
+    crm_choice = st.selectbox("Select CRM", list(presets.keys()))
 
-    zoho_list = response.json()
+    creds = {}
+    for field in presets[crm_choice]:
+        creds[field] = st.text_input(f"{field}", type="password" if "key" in field.lower() or "password" in field.lower() else "default")
 
-    data = zoho_list['data']
+    if st.button("Export Contacts"):
+        with st.spinner(f"Exporting contacts from {crm_choice}..."):
+            if crm_choice == "Follow Up Boss":
+                contacts = get_contacts_from_followupboss(creds["API Key"])
+            elif crm_choice == "HubSpot":
+                contacts = get_contacts_from_hubspot(creds["API Key"])
+            elif crm_choice == "Salesforce":
+                contacts = get_contacts_from_salesforce(creds["Username"], creds["Password"], creds["Security Token"])
+            else:
+                st.error("Unsupported CRM selected.")
+                return
 
-    contacts_list = []
+            # Export to CSV file named contacts.csv in current dir
+            export_contacts_to_csv(contacts, "contacts.csv")
 
-    for contact in data:
-        contacts = {'Department': contact['Department'], 'First name': contact['First_Name'],
-                    'Last name': contact['Last_Name'], 'Email': contact['Email'],
-                    'Phone': contact['Phone'], 'Title': contact['Title']}
-        contacts_list.append(contacts)
-
-    zoho_contacts_df = pd.DataFrame(contacts_list)
-    zoho_contacts_df.to_csv(f"reports/zoho_contacts-{today}.csv", index=False)
-
-    return zoho_contacts_df
-
-
-def get_contacts_from_hubspot():
-    api_client = HubSpot(
-        access_token=os.environ.get("HUBSPOT_ACCESS_TOKEN"))
-
-    hubspot_list = api_client.crm.contacts.get_all()
-
-    contacts_list = []
-    for contact in hubspot_list:
-        contacts = {'First name': contact.properties['firstname'], 'Last name': contact.properties['lastname'],
-                    'Email': contact.properties['email']
-                    }
-        contacts_list.append(contacts)
-
-    hubspot_contacts_df = pd.DataFrame(contacts_list)
-    hubspot_contacts_df.to_csv(f"reports/contacts_hubspot-{today}.csv", index=False)
-
-    return hubspot_contacts_df
-
-
-def get_contacts_from_salesforce():
-    sf = Salesforce(username=os.environ.get("SALESFORCE_USERNAME"),
-                    password=os.environ.get("SALESFORCE_PASSWORD"),
-                    security_token=os.environ.get("SALESFORCE_SECURITY_TOKEN"),
-                    instance_url=os.environ.get("SALESFORCE_INSTANCE_URL"))
-
-    contacts_data = sf.query_all("SELECT Department, Name, Email, Phone, Title FROM Contact")
-
-    salesforce_contacts_df = pd.DataFrame(contacts_data['records']).drop(columns='attributes')
-    salesforce_contacts_df.to_csv(f"reports/salesforce_contacts-{today}.csv", index=False)
-
-    return salesforce_contacts_df
-
-
-get_contacts_from_zoho()
-get_contacts_from_hubspot()
-get_contacts_from_salesforce()
+if __name__ == "__main__":
+    main()
