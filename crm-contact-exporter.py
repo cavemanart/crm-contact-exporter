@@ -80,10 +80,13 @@ def main():
         st.session_state.contacts = []
     if "last_page_fetched" not in st.session_state:
         st.session_state.last_page_fetched = 0
+    if "total_fetched" not in st.session_state:
+        st.session_state.total_fetched = 0
 
     if st.button("Reset Progress"):
         st.session_state.last_page_fetched = 0
         st.session_state.contacts = []
+        st.session_state.total_fetched = 0
         st.success("Progress reset! You can start over now.")
 
     if st.button("Fetch Next Batch"):
@@ -123,23 +126,30 @@ def main():
                         fetched_contacts += 1
                         progress = fetched_contacts / batch_size
                         progress_bar.progress(min(progress, 1.0))
-                        status_text.text(f"Fetched {fetched_contacts} / {batch_size} contacts...")
+                        status_text.text(f"Fetched {fetched_contacts} / {batch_size} contacts (Page {page})")
                         time.sleep(0.1)  # To avoid API rate limits
 
-            # If batch size not reached, try next page
             page += 1
             if page > 1000:
                 st.warning("Reached page limit.")
                 break
 
+        # Update session state with fetched data and last page
         st.session_state.contacts = contacts
         st.session_state.last_page_fetched = page - 1
+        st.session_state.total_fetched += fetched_contacts
 
-        st.success(f"Fetched {len(contacts)} contacts this batch. Last page fetched: {st.session_state.last_page_fetched}")
+        st.success(f"Fetched {fetched_contacts} contacts this batch. Total fetched: {st.session_state.total_fetched}")
+        st.info(f"Last page fetched: {st.session_state.last_page_fetched}")
 
     if st.session_state.contacts:
         csv_data = export_contacts_to_csv(st.session_state.contacts)
-        st.download_button("Download CSV of this batch", data=csv_data, file_name=f"followupboss_contacts_page_{st.session_state.last_page_fetched}.csv", mime="text/csv")
+        st.download_button(
+            "Download CSV of this batch",
+            data=csv_data,
+            file_name=f"followupboss_contacts_page_{st.session_state.last_page_fetched}.csv",
+            mime="text/csv"
+        )
 
 if __name__ == "__main__":
     main()
