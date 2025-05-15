@@ -2,6 +2,7 @@ import os
 import csv
 import streamlit as st
 import requests
+from requests.auth import HTTPBasicAuth
 from simple_salesforce import Salesforce
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException
@@ -17,14 +18,12 @@ def load_config():
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
-    headers = {
-        "Authorization": f"Token token={api_key}"
-    }
     contacts = []
     page = 1
+
     while True:
         url = f"https://api.followupboss.com/v1/people?page={page}&limit=100"
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, auth=HTTPBasicAuth(api_key, ""))
         if response.status_code != 200:
             st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
             break
@@ -33,6 +32,7 @@ def get_contacts_from_followupboss(api_key):
         if not data.get('pagination', {}).get('nextPage'):
             break
         page += 1
+
     return contacts
 
 def get_contacts_from_hubspot(api_key):
