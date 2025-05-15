@@ -2,20 +2,10 @@ import base64
 import csv
 import streamlit as st
 import requests
-from simple_salesforce import Salesforce
-from hubspot import HubSpot
-from hubspot.crm.contacts import ApiException
+import time
 from io import StringIO
 
-# ----------- Helper functions -------------
-
-def save_config(config):
-    st.session_state['config'] = config
-
-def load_config():
-    return st.session_state.get('config', {})
-
-# ----------- Follow Up Boss Helpers -------------
+st.set_page_config(page_title="Follow Up Boss Export with Resume Support")
 
 def safe_get_first_email(contact):
     emails = contact.get("emails")
@@ -44,123 +34,112 @@ def safe_get_first_address(contact):
         return ", ".join([p for p in parts if p])
     return ""
 
-# ----------- CRM Export Functions -------------
+def get_followupboss_contact_details(contact_id, headers):
+    url = f"https://api.followupboss.com/v1/people/{contact_id}"
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        st.warning(f"Failed to get details for contact {contact_id}: {response.status_code}")
+        return None
+    return response.json()
 
-def get_contacts_from_followupboss(api_key):
-    # Use Basic Auth with API key as username, blank password
-    token = base64.b64encode(f"{api_key}:".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {token}"
-    }
-    contacts = []
-    page = 1
-    while True:
-        url = f"https://api.followupboss.com/v1/people?page={page}&limit=100"
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
-            break
-        data = response.json()
-        contacts.extend(data.get('people', []))
-        if not data.get('pagination', {}).get('nextPage'):
-            break
-        page += 1
-    return contacts
-
-def get_contacts_from_hubspot(api_key):
-    client = HubSpot(api_key=api_key)
-    all_contacts = []
-    after = None
-    while True:
-        try:
-            if after:
-                page = client.crm.contacts.basic_api.get_page(limit=100, after=after)
-            else:
-                page = client.crm.contacts.basic_api.get_page(limit=100)
-            all_contacts.extend(page.results)
-            after = page.paging.next.after if page.paging else None
-            if not after:
-                break
-        except ApiException as e:
-            st.error(f"HubSpot API error: {e}")
-            break
-    return [contact.to_dict() for contact in all_contacts]
-
-def get_contacts_from_salesforce(username, password, security_token):
-    sf = Salesforce(username=username, password=password, security_token=security_token)
-    query = "SELECT Id, FirstName, LastName, Email, Phone FROM Contact"
-    results = sf.query_all(query)
-    return results['records']
-
-# ----------- CSV Export -------------
+def get_followupboss_people_page(page, limit, headers):
+    url = f"https://api.followupboss.com/v1/people?page={page}&limit={limit}"
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+        return None
+    return response.json()
 
 def export_contacts_to_csv(contacts):
-    if not contacts:
-        st.warning("No contacts to export.")
-        return None
-
-    # Define the CSV headers exactly as requested
-    fieldnames = ["First Name", "Last Name", "Email", "Phone", "Address", "Tags", "Source", "Created At"]
-
     output = StringIO()
+    fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At", "Address"]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
 
-    for contact in contacts:
-        row = {
-            "First Name": contact.get("firstName", ""),
-            "Last Name": contact.get("lastName", ""),
-            "Email": safe_get_first_email(contact),
-            "Phone": safe_get_first_phone(contact),
-            "Address": safe_get_first_address(contact),
-            "Tags": ", ".join(contact.get("tags", [])) if contact.get("tags") else "",
-            "Source": contact.get("source", ""),
-            "Created At": contact.get("createdAt", "")
-        }
-        writer.writerow(row)
+    for c in contacts:
+        writer.writerow({
+            "First Name": c.get("firstName", ""),
+            "Last Name": c.get("lastName", ""),
+            "Email": safe_get_first_email(c),
+            "Phone": safe_get_first_phone(c),
+            "Tags": ", ".join(c.get("tags", [])),
+            "Source": c.get("source", ""),
+            "Created At": c.get("createdAt", ""),
+            "Address": safe_get_first_address(c)
+        })
 
     return output.getvalue()
 
-# ----------- Streamlit UI -------------
-
 def main():
-    st.title("CRM Contact Exporter")
+    st.title("Follow Up Boss Export with Batch & Resume")
 
-    presets = {
-        "Follow Up Boss": ["API Key"],
-        "HubSpot": ["API Key"],
-        "Salesforce": ["Username", "Password", "Security Token"]
-    }
+    api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+    batch_size = st.number_input("Batch size (contacts per run)", min_value=10, max_value=500, value=100, step=10)
 
-    crm_choice = st.selectbox("Select CRM", list(presets.keys()))
+    if "contacts" not in st.session_state:
+        st.session_state.contacts = []
+    if "last_page_fetched" not in st.session_state:
+        st.session_state.last_page_fetched = 0
 
-    creds = {}
-    for field in presets[crm_choice]:
-        creds[field] = st.text_input(f"{field}", type="password" if "key" in field.lower() or "password" in field.lower() else "default")
+    if st.button("Reset Progress"):
+        st.session_state.last_page_fetched = 0
+        st.session_state.contacts = []
+        st.success("Progress reset! You can start over now.")
 
-    if st.button("Export Contacts"):
-        with st.spinner(f"Exporting contacts from {crm_choice}..."):
-            contacts = []
-            if crm_choice == "Follow Up Boss":
-                contacts = get_contacts_from_followupboss(creds["API Key"])
-            elif crm_choice == "HubSpot":
-                contacts = get_contacts_from_hubspot(creds["API Key"])
-            elif crm_choice == "Salesforce":
-                contacts = get_contacts_from_salesforce(creds["Username"], creds["Password"], creds["Security Token"])
-            else:
-                st.error("Unsupported CRM selected.")
-                return
+    if st.button("Fetch Next Batch"):
+        if not api_key:
+            st.error("API Key is required")
+            return
 
-            csv_content = export_contacts_to_csv(contacts)
-            if csv_content:
-                st.success(f"Exported {len(contacts)} contacts!")
+        token = base64.b64encode(f"{api_key}:".encode()).decode()
+        headers = {"Authorization": f"Basic {token}"}
 
-                st.download_button(
-                    label="Download contacts.csv",
-                    data=csv_content,
-                    file_name="contacts.csv",
-                    mime="text/csv"
-                )
+        contacts = []
+        fetched_contacts = 0
+        page = st.session_state.last_page_fetched + 1
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        while fetched_contacts < batch_size:
+            data = get_followupboss_people_page(page, 100, headers)
+            if not data or "people" not in data:
+                st.warning("No more contacts or error fetching contacts.")
+                break
+
+            people = data["people"]
+            if not people:
+                st.info("No more contacts found on this page.")
+                break
+
+            for basic_contact in people:
+                if fetched_contacts >= batch_size:
+                    break
+                contact_id = basic_contact.get("id")
+                if contact_id:
+                    full_contact = get_followupboss_contact_details(contact_id, headers)
+                    if full_contact:
+                        contacts.append(full_contact)
+                        fetched_contacts += 1
+                        progress = fetched_contacts / batch_size
+                        progress_bar.progress(min(progress, 1.0))
+                        status_text.text(f"Fetched {fetched_contacts} / {batch_size} contacts...")
+                        time.sleep(0.1)  # To avoid API rate limits
+
+            # If batch size not reached, try next page
+            page += 1
+            if page > 1000:
+                st.warning("Reached page limit.")
+                break
+
+        st.session_state.contacts = contacts
+        st.session_state.last_page_fetched = page - 1
+
+        st.success(f"Fetched {len(contacts)} contacts this batch. Last page fetched: {st.session_state.last_page_fetched}")
+
+    if st.session_state.contacts:
+        csv_data = export_contacts_to_csv(st.session_state.contacts)
+        st.download_button("Download CSV of this batch", data=csv_data, file_name=f"followupboss_contacts_page_{st.session_state.last_page_fetched}.csv", mime="text/csv")
 
 if __name__ == "__main__":
     main()
