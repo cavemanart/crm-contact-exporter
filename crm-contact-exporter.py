@@ -15,15 +15,25 @@ def save_config(config):
 def load_config():
     return st.session_state.get('config', {})
 
+def safe_get_first_email(contact):
+    emails = contact.get("emails")
+    if emails and isinstance(emails, list) and len(emails) > 0:
+        return emails[0].get("email", "")
+    return ""
+
+def safe_get_first_phone(contact):
+    phones = contact.get("phones")
+    if phones and isinstance(phones, list) and len(phones) > 0:
+        return phones[0].get("number", "")
+    return ""
+
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
-    # Basic Auth header: base64 encode "API_KEY:" (API key + colon)
-    auth_str = f"{api_key}:"
-    b64_auth = base64.b64encode(auth_str.encode()).decode()
-
+    # Follow Up Boss requires Basic HTTP Auth with API key as username and empty password
+    token = base64.b64encode(f"{api_key}:".encode()).decode()
     headers = {
-        "Authorization": f"Basic {b64_auth}"
+        "Authorization": f"Basic {token}"
     }
     contacts = []
     page = 1
@@ -72,7 +82,6 @@ def export_contacts_to_csv(contacts, filename):
         st.warning("No contacts to export.")
         return
 
-    # We want to export only these fields:
     fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At"]
 
     with open(filename, 'w', newline='', encoding='utf-8') as f:
@@ -80,12 +89,11 @@ def export_contacts_to_csv(contacts, filename):
         writer.writeheader()
 
         for contact in contacts:
-            # Map your fields safely, fallback to empty string if missing
             row = {
                 "First Name": contact.get("firstName", ""),
                 "Last Name": contact.get("lastName", ""),
-                "Email": contact.get("emails")[0]["email"] if contact.get("emails") else "",
-                "Phone": contact.get("phones")[0]["number"] if contact.get("phones") else "",
+                "Email": safe_get_first_email(contact),
+                "Phone": safe_get_first_phone(contact),
                 "Tags": ", ".join(contact.get("tags", [])) if contact.get("tags") else "",
                 "Source": contact.get("source", ""),
                 "Created At": contact.get("createdAt", "")
