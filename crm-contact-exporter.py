@@ -1,64 +1,97 @@
 import os
 import csv
-import base64
+import json
 import streamlit as st
 import requests
 from simple_salesforce import Salesforce
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException
 
-# ----------- Helper functions -------------
+PROGRESS_FILE = "progress.json"
+CSV_FILE = "contacts_export.csv"
 
-def get_auth_header(api_key):
-    token = base64.b64encode(f"{api_key}:".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+# ----------- Helper Functions -------------
 
-# ----------- CRM Export Functions -------------
+def save_progress(progress_data):
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump(progress_data, f)
 
-def get_contacts_from_followupboss(api_key, batch_size=1000):
-    headers = get_auth_header(api_key)
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def reset_progress():
+    if os.path.exists(PROGRESS_FILE):
+        os.remove(PROGRESS_FILE)
+    if os.path.exists(CSV_FILE):
+        os.remove(CSV_FILE)
+
+def export_contacts_to_csv(contacts, append=True):
+    if not contacts:
+        st.warning("No contacts to export.")
+        return
+
+    # Define the exact desired headers
+    headers = ["First Name", "Last Name", "Email", "Phone", "Address", "Tags", "Source", "Created At"]
+
+    # Format contacts
+    formatted = []
+    for c in contacts:
+        formatted.append({
+            "First Name": c.get("firstName", ""),
+            "Last Name": c.get("lastName", ""),
+            "Email": c.get("emails", [{}])[0].get("value", "") if c.get("emails") else "",
+            "Phone": c.get("phones", [{}])[0].get("value", "") if c.get("phones") else "",
+            "Address": c.get("primaryAddress", {}).get("street", ""),
+            "Tags": ", ".join(c.get("tags", [])),
+            "Source": c.get("source", ""),
+            "Created At": c.get("createdAt", "")
+        })
+
+    mode = 'a' if append and os.path.exists(CSV_FILE) else 'w'
+    with open(CSV_FILE, mode, newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        if mode == 'w':
+            writer.writeheader()
+        writer.writerows(formatted)
+
+# ----------- CRM API Functions -------------
+
+def get_followupboss_contacts(api_key, start_page=1):
+    headers = {
+        "Authorization": f"Basic {api_key}:".encode("ascii").decode("utf-8")
+    }
     contacts = []
-    page = 1
-    total_fetched = 0
+    page = start_page
+    has_next = True
+    batch_size = 100
 
-    st.info("Fetching contacts from Follow Up Boss...")
-    progress = st.progress(0)
+    with st.spinner("Fetching contacts..."):
+        progress = st.progress(0)
+        count = 0
+        while has_next:
+            url = f"https://api.followupboss.com/v1/people?page={page}&limit={batch_size}"
+            response = requests.get(url, headers={
+                "Authorization": f"Basic {requests.auth._basic_auth_str(api_key, '')}"
+            })
 
-    while True:
-        url = f"https://api.followupboss.com/v1/people?page={page}&limit=100"
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
-            break
-        data = response.json()
-        people = data.get('people', [])
-
-        for idx, person in enumerate(people):
-            person_id = person.get("id")
-            detail_url = f"https://api.followupboss.com/v1/people/{person_id}?fields=allFields"
-            detail_resp = requests.get(detail_url, headers=headers)
-            if detail_resp.status_code == 200:
-                detail = detail_resp.json()
-                contact = {
-                    "First Name": detail.get("firstName", ""),
-                    "Last Name": detail.get("lastName", ""),
-                    "Email": detail.get("emails", [{}])[0].get("value", "") if detail.get("emails") else "",
-                    "Phone": detail.get("phones", [{}])[0].get("value", "") if detail.get("phones") else "",
-                    "Tags": ", ".join(detail.get("tags", [])),
-                    "Source": detail.get("source", ""),
-                    "Created At": detail.get("created", ""),
-                    "Address": detail.get("address", {}).get("formatted", "") if detail.get("address") else ""
-                }
-                contacts.append(contact)
-                total_fetched += 1
-                progress.progress(min(total_fetched / batch_size, 1.0))
-
-            if total_fetched >= batch_size:
+            if response.status_code != 200:
+                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
                 break
 
-        if not data.get('pagination', {}).get('nextPage') or total_fetched >= batch_size:
-            break
-        page += 1
+            data = response.json()
+            batch = data.get("people", [])
+            contacts.extend(batch)
+            export_contacts_to_csv(batch)
+
+            page += 1
+            count += len(batch)
+            save_progress({"page": page})
+            has_next = data.get("pagination", {}).get("nextPage", False)
+
+            progress.progress(min(1.0, count / 13000))  # assuming 13k max
 
     return contacts
 
@@ -79,55 +112,23 @@ def get_contacts_from_hubspot(api_key):
         except ApiException as e:
             st.error(f"HubSpot API error: {e}")
             break
-    return [
-        {
-            "First Name": c.properties.get("firstname", ""),
-            "Last Name": c.properties.get("lastname", ""),
-            "Email": c.properties.get("email", ""),
-            "Phone": c.properties.get("phone", ""),
-            "Created At": c.properties.get("createdate", ""),
-            "Tags": "",
-            "Source": "",
-            "Address": ""
-        } for c in all_contacts
-    ]
+    export_contacts_to_csv([c.to_dict() for c in all_contacts])
 
 def get_contacts_from_salesforce(username, password, security_token):
     sf = Salesforce(username=username, password=password, security_token=security_token)
     query = "SELECT FirstName, LastName, Email, Phone FROM Contact"
-    results = sf.query_all(query)
-    return [
-        {
-            "First Name": record.get("FirstName", ""),
-            "Last Name": record.get("LastName", ""),
-            "Email": record.get("Email", ""),
-            "Phone": record.get("Phone", ""),
-            "Created At": "",
-            "Tags": "",
-            "Source": "",
-            "Address": ""
-        } for record in results["records"]
-    ]
-
-# ----------- CSV Export -------------
-
-def export_contacts_to_csv(contacts, filename):
-    if not contacts:
-        st.warning("No contacts to export.")
-        return
-    keys = contacts[0].keys()
-    with open(filename, 'w', newline='', encoding='utf-8') as f:
-        dict_writer = csv.DictWriter(f, fieldnames=keys)
-        dict_writer.writeheader()
-        dict_writer.writerows(contacts)
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
-    with open(filename, "rb") as f:
-        st.download_button(
-            label="Download contacts.csv",
-            data=f,
-            file_name="contacts.csv",
-            mime="text/csv"
-        )
+    records = sf.query_all(query)['records']
+    formatted = [{
+        "First Name": r.get("FirstName"),
+        "Last Name": r.get("LastName"),
+        "Email": r.get("Email"),
+        "Phone": r.get("Phone"),
+        "Address": "",
+        "Tags": "",
+        "Source": "",
+        "Created At": ""
+    } for r in records]
+    export_contacts_to_csv(formatted)
 
 # ----------- Streamlit UI -------------
 
@@ -144,23 +145,29 @@ def main():
 
     creds = {}
     for field in presets[crm_choice]:
-        creds[field] = st.text_input(f"{field}", type="password" if "key" in field.lower() or "password" in field.lower() else "default")
+        creds[field] = st.text_input(field, type="password" if "key" in field.lower() or "password" in field.lower() else "default")
 
-    batch_size = st.number_input("Max Contacts to Export (batch size)", value=1000, step=100)
+    progress_state = load_progress()
+    resume = False
+    if crm_choice == "Follow Up Boss" and progress_state.get("page"):
+        resume = st.checkbox(f"Resume from page {progress_state['page']}?", value=True)
 
-    if st.button("Export Contacts"):
-        with st.spinner(f"Exporting contacts from {crm_choice}..."):
-            if crm_choice == "Follow Up Boss":
-                contacts = get_contacts_from_followupboss(creds["API Key"], batch_size)
-            elif crm_choice == "HubSpot":
-                contacts = get_contacts_from_hubspot(creds["API Key"])
-            elif crm_choice == "Salesforce":
-                contacts = get_contacts_from_salesforce(creds["Username"], creds["Password"], creds["Security Token"])
-            else:
-                st.error("Unsupported CRM selected.")
-                return
+    if st.button("Start Export"):
+        reset_csv = st.checkbox("Start fresh (delete previous progress)?")
+        if reset_csv:
+            reset_progress()
 
-            export_contacts_to_csv(contacts, "contacts.csv")
+        if crm_choice == "Follow Up Boss":
+            page = progress_state.get("page", 1) if resume else 1
+            get_followupboss_contacts(creds["API Key"], start_page=page)
+        elif crm_choice == "HubSpot":
+            get_contacts_from_hubspot(creds["API Key"])
+        elif crm_choice == "Salesforce":
+            get_contacts_from_salesforce(creds["Username"], creds["Password"], creds["Security Token"])
+
+        st.success("Contacts export complete.")
+        with open(CSV_FILE, "rb") as f:
+            st.download_button("Download CSV", f, file_name="contacts_export.csv", mime="text/csv")
 
 if __name__ == "__main__":
     main()
