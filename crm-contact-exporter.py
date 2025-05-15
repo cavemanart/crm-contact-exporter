@@ -30,7 +30,6 @@ def safe_get_first_phone(contact):
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
-    # Follow Up Boss requires Basic HTTP Auth with API key as username and empty password
     token = base64.b64encode(f"{api_key}:".encode()).decode()
     headers = {
         "Authorization": f"Basic {token}"
@@ -80,7 +79,7 @@ def get_contacts_from_salesforce(username, password, security_token):
 def export_contacts_to_csv(contacts, filename):
     if not contacts:
         st.warning("No contacts to export.")
-        return
+        return False
 
     fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At"]
 
@@ -100,7 +99,7 @@ def export_contacts_to_csv(contacts, filename):
             }
             writer.writerow(row)
 
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
+    return True
 
 # ----------- Streamlit UI -------------
 
@@ -131,7 +130,20 @@ def main():
                 st.error("Unsupported CRM selected.")
                 return
 
-            export_contacts_to_csv(contacts, "contacts.csv")
+            exported = export_contacts_to_csv(contacts, "contacts.csv")
+
+            if exported:
+                st.success(f"Exported {len(contacts)} contacts to contacts.csv")
+
+                with open("contacts.csv", "rb") as f:
+                    csv_data = f.read()
+
+                st.download_button(
+                    label="Download CSV",
+                    data=csv_data,
+                    file_name="contacts.csv",
+                    mime="text/csv"
+                )
 
 if __name__ == "__main__":
     main()
