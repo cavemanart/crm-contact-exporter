@@ -1,6 +1,5 @@
 import os
 import csv
-import base64
 import streamlit as st
 import requests
 from simple_salesforce import Salesforce
@@ -15,12 +14,29 @@ def save_config(config):
 def load_config():
     return st.session_state.get('config', {})
 
+# ----------- Data normalization -------------
+
+def normalize_contact(contact):
+    """
+    Extract and return a dict with keys:
+    First Name, Last Name, Email, Phone, Tags, Source, Created At
+    Handles missing keys gracefully.
+    """
+    return {
+        "First Name": contact.get("firstName") or contact.get("FirstName") or contact.get("first_name") or "",
+        "Last Name": contact.get("lastName") or contact.get("LastName") or contact.get("last_name") or "",
+        "Email": contact.get("email") or contact.get("Email") or "",
+        "Phone": contact.get("phone") or contact.get("Phone") or "",
+        "Tags": ",".join(contact.get("tags", [])) if isinstance(contact.get("tags"), list) else contact.get("tags", ""),
+        "Source": contact.get("source") or contact.get("Source") or "",
+        "Created At": contact.get("createdAt") or contact.get("CreatedAt") or contact.get("created_at") or "",
+    }
+
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
-    token = base64.b64encode(f"{api_key}:".encode()).decode()
     headers = {
-        "Authorization": f"Basic {token}"
+        "Authorization": f"Basic {api_key}:"
     }
     contacts = []
     page = 1
@@ -68,15 +84,17 @@ def export_contacts_to_csv(contacts, filename):
     if not contacts:
         st.warning("No contacts to export.")
         return
-    keys = set()
-    for c in contacts:
-        keys.update(c.keys())
-    keys = list(keys)
+
+    normalized_contacts = [normalize_contact(c) for c in contacts]
+
+    fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At"]
+
     with open(filename, 'w', newline='', encoding='utf-8') as f:
-        dict_writer = csv.DictWriter(f, fieldnames=keys)
-        dict_writer.writeheader()
-        dict_writer.writerows(contacts)
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(normalized_contacts)
+
+    st.success(f"Exported {len(normalized_contacts)} contacts to {filename}")
     with open(filename, 'rb') as f:
         st.download_button(
             label="Download contacts.csv",
@@ -114,7 +132,6 @@ def main():
                 st.error("Unsupported CRM selected.")
                 return
 
-            # Export to CSV file named contacts.csv in current dir
             export_contacts_to_csv(contacts, "contacts.csv")
 
 if __name__ == "__main__":
