@@ -1,5 +1,6 @@
 import os
 import csv
+import base64
 import streamlit as st
 import requests
 from simple_salesforce import Salesforce
@@ -14,29 +15,15 @@ def save_config(config):
 def load_config():
     return st.session_state.get('config', {})
 
-# ----------- Data normalization -------------
-
-def normalize_contact(contact):
-    """
-    Extract and return a dict with keys:
-    First Name, Last Name, Email, Phone, Tags, Source, Created At
-    Handles missing keys gracefully.
-    """
-    return {
-        "First Name": contact.get("firstName") or contact.get("FirstName") or contact.get("first_name") or "",
-        "Last Name": contact.get("lastName") or contact.get("LastName") or contact.get("last_name") or "",
-        "Email": contact.get("email") or contact.get("Email") or "",
-        "Phone": contact.get("phone") or contact.get("Phone") or "",
-        "Tags": ",".join(contact.get("tags", [])) if isinstance(contact.get("tags"), list) else contact.get("tags", ""),
-        "Source": contact.get("source") or contact.get("Source") or "",
-        "Created At": contact.get("createdAt") or contact.get("CreatedAt") or contact.get("created_at") or "",
-    }
-
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
+    # Basic Auth header: base64 encode "API_KEY:" (API key + colon)
+    auth_str = f"{api_key}:"
+    b64_auth = base64.b64encode(auth_str.encode()).decode()
+
     headers = {
-        "Authorization": f"Basic {api_key}:"
+        "Authorization": f"Basic {b64_auth}"
     }
     contacts = []
     page = 1
@@ -85,23 +72,27 @@ def export_contacts_to_csv(contacts, filename):
         st.warning("No contacts to export.")
         return
 
-    normalized_contacts = [normalize_contact(c) for c in contacts]
-
+    # We want to export only these fields:
     fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At"]
 
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(normalized_contacts)
 
-    st.success(f"Exported {len(normalized_contacts)} contacts to {filename}")
-    with open(filename, 'rb') as f:
-        st.download_button(
-            label="Download contacts.csv",
-            data=f,
-            file_name=filename,
-            mime='text/csv'
-        )
+        for contact in contacts:
+            # Map your fields safely, fallback to empty string if missing
+            row = {
+                "First Name": contact.get("firstName", ""),
+                "Last Name": contact.get("lastName", ""),
+                "Email": contact.get("emails")[0]["email"] if contact.get("emails") else "",
+                "Phone": contact.get("phones")[0]["number"] if contact.get("phones") else "",
+                "Tags": ", ".join(contact.get("tags", [])) if contact.get("tags") else "",
+                "Source": contact.get("source", ""),
+                "Created At": contact.get("createdAt", "")
+            }
+            writer.writerow(row)
+
+    st.success(f"Exported {len(contacts)} contacts to {filename}")
 
 # ----------- Streamlit UI -------------
 
