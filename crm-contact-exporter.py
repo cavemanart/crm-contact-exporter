@@ -1,11 +1,11 @@
-import os
-import csv
 import base64
+import csv
 import streamlit as st
 import requests
 from simple_salesforce import Salesforce
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException
+from io import StringIO
 
 # ----------- Helper functions -------------
 
@@ -14,6 +14,8 @@ def save_config(config):
 
 def load_config():
     return st.session_state.get('config', {})
+
+# ----------- Follow Up Boss Helpers -------------
 
 def safe_get_first_email(contact):
     emails = contact.get("emails")
@@ -24,12 +26,28 @@ def safe_get_first_email(contact):
 def safe_get_first_phone(contact):
     phones = contact.get("phones")
     if phones and isinstance(phones, list) and len(phones) > 0:
-        return phones[0].get("number", "")
+        return phones[0].get("phone", "")
+    return ""
+
+def safe_get_first_address(contact):
+    addresses = contact.get("addresses")
+    if addresses and isinstance(addresses, list) and len(addresses) > 0:
+        addr = addresses[0]
+        parts = [
+            addr.get("street1", ""),
+            addr.get("street2", ""),
+            addr.get("city", ""),
+            addr.get("state", ""),
+            addr.get("zip", ""),
+            addr.get("country", "")
+        ]
+        return ", ".join([p for p in parts if p])
     return ""
 
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
+    # Use Basic Auth with API key as username, blank password
     token = base64.b64encode(f"{api_key}:".encode()).decode()
     headers = {
         "Authorization": f"Basic {token}"
@@ -76,30 +94,32 @@ def get_contacts_from_salesforce(username, password, security_token):
 
 # ----------- CSV Export -------------
 
-def export_contacts_to_csv(contacts, filename):
+def export_contacts_to_csv(contacts):
     if not contacts:
         st.warning("No contacts to export.")
-        return False
+        return None
 
-    fieldnames = ["First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At"]
+    # Define the CSV headers exactly as requested
+    fieldnames = ["First Name", "Last Name", "Email", "Phone", "Address", "Tags", "Source", "Created At"]
 
-    with open(filename, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
 
-        for contact in contacts:
-            row = {
-                "First Name": contact.get("firstName", ""),
-                "Last Name": contact.get("lastName", ""),
-                "Email": safe_get_first_email(contact),
-                "Phone": safe_get_first_phone(contact),
-                "Tags": ", ".join(contact.get("tags", [])) if contact.get("tags") else "",
-                "Source": contact.get("source", ""),
-                "Created At": contact.get("createdAt", "")
-            }
-            writer.writerow(row)
+    for contact in contacts:
+        row = {
+            "First Name": contact.get("firstName", ""),
+            "Last Name": contact.get("lastName", ""),
+            "Email": safe_get_first_email(contact),
+            "Phone": safe_get_first_phone(contact),
+            "Address": safe_get_first_address(contact),
+            "Tags": ", ".join(contact.get("tags", [])) if contact.get("tags") else "",
+            "Source": contact.get("source", ""),
+            "Created At": contact.get("createdAt", "")
+        }
+        writer.writerow(row)
 
-    return True
+    return output.getvalue()
 
 # ----------- Streamlit UI -------------
 
@@ -120,6 +140,7 @@ def main():
 
     if st.button("Export Contacts"):
         with st.spinner(f"Exporting contacts from {crm_choice}..."):
+            contacts = []
             if crm_choice == "Follow Up Boss":
                 contacts = get_contacts_from_followupboss(creds["API Key"])
             elif crm_choice == "HubSpot":
@@ -130,17 +151,13 @@ def main():
                 st.error("Unsupported CRM selected.")
                 return
 
-            exported = export_contacts_to_csv(contacts, "contacts.csv")
-
-            if exported:
-                st.success(f"Exported {len(contacts)} contacts to contacts.csv")
-
-                with open("contacts.csv", "rb") as f:
-                    csv_data = f.read()
+            csv_content = export_contacts_to_csv(contacts)
+            if csv_content:
+                st.success(f"Exported {len(contacts)} contacts!")
 
                 st.download_button(
-                    label="Download CSV",
-                    data=csv_data,
+                    label="Download contacts.csv",
+                    data=csv_content,
                     file_name="contacts.csv",
                     mime="text/csv"
                 )
