@@ -1,8 +1,7 @@
-import os
 import csv
+import io
 import streamlit as st
 import requests
-from requests.auth import HTTPBasicAuth
 from simple_salesforce import Salesforce
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException
@@ -18,12 +17,14 @@ def load_config():
 # ----------- CRM Export Functions -------------
 
 def get_contacts_from_followupboss(api_key):
+    headers = {
+        "Authorization": f"Basic {api_key}:"
+    }
     contacts = []
     page = 1
-
     while True:
         url = f"https://api.followupboss.com/v1/people?page={page}&limit=100"
-        response = requests.get(url, auth=HTTPBasicAuth(api_key, ""))
+        response = requests.get(url, headers=headers)
         if response.status_code != 200:
             st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
             break
@@ -32,7 +33,6 @@ def get_contacts_from_followupboss(api_key):
         if not data.get('pagination', {}).get('nextPage'):
             break
         page += 1
-
     return contacts
 
 def get_contacts_from_hubspot(api_key):
@@ -62,19 +62,27 @@ def get_contacts_from_salesforce(username, password, security_token):
 
 # ----------- CSV Export -------------
 
-def export_contacts_to_csv(contacts, filename):
+def export_contacts_to_csv(contacts):
     if not contacts:
         st.warning("No contacts to export.")
         return
+
     keys = set()
     for c in contacts:
         keys.update(c.keys())
     keys = list(keys)
-    with open(filename, 'w', newline='', encoding='utf-8') as f:
-        dict_writer = csv.DictWriter(f, fieldnames=keys)
-        dict_writer.writeheader()
-        dict_writer.writerows(contacts)
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=keys)
+    writer.writeheader()
+    writer.writerows(contacts)
+
+    st.download_button(
+        label="Download contacts as CSV",
+        data=output.getvalue(),
+        file_name="contacts.csv",
+        mime="text/csv"
+    )
 
 # ----------- Streamlit UI -------------
 
@@ -105,8 +113,7 @@ def main():
                 st.error("Unsupported CRM selected.")
                 return
 
-            # Export to CSV file named contacts.csv in current dir
-            export_contacts_to_csv(contacts, "contacts.csv")
+            export_contacts_to_csv(contacts)
 
 if __name__ == "__main__":
     main()
