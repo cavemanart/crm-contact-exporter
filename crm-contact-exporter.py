@@ -6,19 +6,35 @@ import time
 
 CSV_FILE = "contacts.csv"
 
-# Fetch agents (users)
+# 🔁 Fetch all agents using pagination
 def fetch_follow_up_boss_agents(api_key):
     headers = {
-        "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
+        "Authorization": "Basic " + base64.b64encode(f"{api_key}:".encode()).decode()
     }
     url = "https://api.followupboss.com/v1/users"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Failed to fetch agents: {response.status_code} {response.text}")
-        return []
-    return response.json().get("users", [])
+    agents = []
+    next_token = None
 
-# Fetch contacts, optionally filtered by assigned user
+    with st.spinner("Fetching all agents..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Error fetching agents: {response.status_code} {response.text}")
+                break
+            data = response.json()
+            agents.extend(data.get("users", []))
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
+
+    st.success(f"Fetched {len(agents)} agents")
+    return agents
+
+# 🔁 Fetch contacts, optionally filtered by agent
 def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None):
     headers = {
         "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
@@ -44,7 +60,7 @@ def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None):
             time.sleep(0.2)
     return contacts[:limit]
 
-# Export to CSV
+# ✅ Export to CSV
 def export_to_csv(contacts, filename=CSV_FILE):
     if not contacts:
         st.warning("No contacts to export.")
@@ -63,13 +79,13 @@ def export_to_csv(contacts, filename=CSV_FILE):
             writer.writerow([name, email, phone, agent, stage])
     st.success(f"Exported {len(contacts)} contacts to {filename}")
 
-    # Provide download link
+    # 📁 Download link
     with open(filename, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
         href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
         st.markdown(href, unsafe_allow_html=True)
 
-# Streamlit UI
+# 🚀 Streamlit UI
 st.title("📇 Follow Up Boss Contact Exporter")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
