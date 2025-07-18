@@ -3,13 +3,23 @@ import requests
 import csv
 import base64
 import time
-import hashlib
-import hmac
-import uuid
 
 CSV_FILE = "contacts.csv"
 
-def fetch_follow_up_boss_contacts(api_key, limit):
+# Fetch agents (users)
+def fetch_follow_up_boss_agents(api_key):
+    headers = {
+        "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
+    }
+    url = "https://api.followupboss.com/v1/users"
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        st.error(f"Failed to fetch agents: {response.status_code} {response.text}")
+        return []
+    return response.json().get("users", [])
+
+# Fetch contacts, optionally filtered by assigned user
+def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None):
     headers = {
         "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
     }
@@ -19,6 +29,8 @@ def fetch_follow_up_boss_contacts(api_key, limit):
     with st.spinner("Fetching contacts from Follow Up Boss..."):
         while len(contacts) < limit:
             params = {"limit": 100, "offset": offset}
+            if assigned_user_id:
+                params["assignedUserId"] = assigned_user_id
             response = requests.get(url, headers=headers, params=params)
             if response.status_code != 200:
                 st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
@@ -32,127 +44,45 @@ def fetch_follow_up_boss_contacts(api_key, limit):
             time.sleep(0.2)
     return contacts[:limit]
 
-def fetch_kvcore_contacts(api_key, limit):
-    headers = {"Authorization": f"Bearer {api_key}"}
-    url = "https://api.kvcore.com/v2/public/contacts"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"kvCORE API error: {response.status_code} {response.text}")
-        return []
-    return response.json().get("data", [])[:limit]
+# Export to CSV
+def export_to_csv(contacts, filename=CSV_FILE):
+    if not contacts:
+        st.warning("No contacts to export.")
+        return
 
-def fetch_boomtown_contacts(api_key, api_secret, limit):
-    timestamp = str(int(time.time()))
-    nonce = str(uuid.uuid4())
-    path = "/contacts"
-    string_to_sign = f"{path}{timestamp}{nonce}"
-    signature = hmac.new(api_secret.encode(), string_to_sign.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-Boomtown-Token": api_key,
-        "X-Boomtown-Signature": signature,
-        "X-Boomtown-Timestamp": timestamp,
-        "X-Boomtown-Nonce": nonce,
-    }
-    url = f"https://api.goboomtown.com/v3{path}"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"BoomTown API error: {response.status_code} {response.text}")
-        return []
-    return response.json().get("contacts", [])[:limit]
-
-def fetch_liondesk_contacts(access_token, limit):
-    headers = {"Authorization": f"Bearer {access_token}"}
-    url = "https://api.liondesk.com/v1/contacts"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"LionDesk API error: {response.status_code} {response.text}")
-        return []
-    return response.json().get("contacts", [])[:limit]
-
-def export_contacts_to_csv(contacts, crm_type):
-    with open(CSV_FILE, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=[
-            "First Name", "Last Name", "Email", "Phone", "Tags", "Source", "Created At", "Street", "City", "State", "Zip"
-        ])
-        writer.writeheader()
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        headers = ["Name", "Email", "Phone", "Assigned Agent", "Stage"]
+        writer.writerow(headers)
         for c in contacts:
-            if crm_type == "Follow Up Boss":
-                writer.writerow({
-                    "First Name": c.get("firstName", ""),
-                    "Last Name": c.get("lastName", ""),
-                    "Email": c.get("emails")[0]["value"] if c.get("emails") else "",
-                    "Phone": c.get("phones")[0]["value"] if c.get("phones") else "",
-                    "Tags": ", ".join(c.get("tags", [])),
-                    "Source": c.get("source", ""),
-                    "Created At": c.get("created", ""),
-                    "Street": c.get("addresses")[0]["street"] if c.get("addresses") else "",
-                    "City": c.get("addresses")[0]["city"] if c.get("addresses") else "",
-                    "State": c.get("addresses")[0]["state"] if c.get("addresses") else "",
-                    "Zip": c.get("addresses")[0]["code"] if c.get("addresses") else "",
-                })
-            else:
-                writer.writerow({
-                    "First Name": c.get("first_name", ""),
-                    "Last Name": c.get("last_name", ""),
-                    "Email": c.get("email", ""),
-                    "Phone": c.get("phone", ""),
-                    "Tags": "",
-                    "Source": c.get("source", ""),
-                    "Created At": c.get("created", ""),
-                    "Street": c.get("street", ""),
-                    "City": c.get("city", ""),
-                    "State": c.get("state", ""),
-                    "Zip": c.get("zip", ""),
-                })
+            name = c.get("name", "")
+            email = ", ".join(e["value"] for e in c.get("emails", []))
+            phone = ", ".join(p["value"] for p in c.get("phones", []))
+            agent = c.get("assignedTo", {}).get("name", "")
+            stage = c.get("stage", "")
+            writer.writerow([name, email, phone, agent, stage])
+    st.success(f"Exported {len(contacts)} contacts to {filename}")
 
-def main():
-    st.set_page_config(page_title="CRM Contact Exporter", layout="centered")
-    st.markdown(
-        """
-        <style>
-        div[data-baseweb="select"] > div { background-color: white !important; color: black !important; }
-        div[data-baseweb="select"] > div:hover { background-color: black !important; color: white !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Provide download link
+    with open(filename, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
+        st.markdown(href, unsafe_allow_html=True)
 
-    st.title("CRM Contact Exporter")
-    st.write("This tool pulls your CRM contacts and exports them to a CSV.")
+# Streamlit UI
+st.title("📇 Follow Up Boss Contact Exporter")
 
-    crm_type = st.selectbox("Select CRM", ["Follow Up Boss", "kvCORE", "BoomTown", "LionDesk"])
+api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+limit = st.number_input("Number of contacts to fetch", min_value=1, max_value=5000, value=500)
 
-    limit = st.number_input("Number of contacts to export", min_value=1, max_value=10000, value=100)
+if api_key:
+    agents = fetch_follow_up_boss_agents(api_key)
+    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
+    agent_names = ["All Agents"] + list(agent_map.keys())
+    selected_agent = st.selectbox("Filter contacts by agent", agent_names)
 
-    api_key = st.text_input(f"Enter your {crm_type} API Key", type="password")
+    assigned_user_id = None if selected_agent == "All Agents" else agent_map[selected_agent]
 
-    secret = ""
-    if crm_type == "BoomTown":
-        secret = st.text_input("Enter your BoomTown API Secret", type="password")
-
-    if st.button("Export Contacts"):
-        if not api_key:
-            st.error("Please enter your API Key.")
-            return
-
-        contacts = []
-        if crm_type == "Follow Up Boss":
-            contacts = fetch_follow_up_boss_contacts(api_key, limit)
-        elif crm_type == "kvCORE":
-            contacts = fetch_kvcore_contacts(api_key, limit)
-        elif crm_type == "BoomTown":
-            if not secret:
-                st.error("Please enter your BoomTown secret.")
-                return
-            contacts = fetch_boomtown_contacts(api_key, secret, limit)
-        elif crm_type == "LionDesk":
-            contacts = fetch_liondesk_contacts(api_key, limit)
-
-        if contacts:
-            export_contacts_to_csv(contacts, crm_type)
-            with open(CSV_FILE, "rb") as f:
-                st.success(f"Exported {len(contacts)} contacts to {CSV_FILE}")
-                st.download_button("Download CSV", f, file_name=CSV_FILE, mime="text/csv")
-
-if __name__ == "__main__":
-    main()
+    if st.button("Fetch and Export Contacts"):
+        contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id)
+        export_to_csv(contacts)
