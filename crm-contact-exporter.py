@@ -68,19 +68,27 @@ def export_to_csv(contacts, filename=CSV_FILE):
 
     with open(filename, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        headers = ["Name", "Email", "Phone", "Assigned Agent", "Stage"]
+        headers = ["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"]
         writer.writerow(headers)
         for c in contacts:
             name = c.get("name", "")
             email = ", ".join(e["value"] for e in c.get("emails", []))
             phone = ", ".join(p["value"] for p in c.get("phones", []))
+
+            address_obj = c.get("addresses", [])
+            if address_obj and isinstance(address_obj, list) and address_obj[0]:
+                addr = address_obj[0]
+                address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}"
+            else:
+                address = ""
+
             assigned = c.get("assignedTo")
             agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
             stage = c.get("stage", "")
-            writer.writerow([name, email, phone, agent, stage])
+            writer.writerow([name, email, phone, address, agent, stage])
+
     st.success(f"Exported {len(contacts)} contacts to {filename}")
 
-    # 📁 Download link
     with open(filename, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
         href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
