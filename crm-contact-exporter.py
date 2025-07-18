@@ -74,7 +74,8 @@ def export_to_csv(contacts, filename=CSV_FILE):
             name = c.get("name", "")
             email = ", ".join(e["value"] for e in c.get("emails", []))
             phone = ", ".join(p["value"] for p in c.get("phones", []))
-            agent = c.get("assignedTo", {}).get("name", "")
+            assigned = c.get("assignedTo")
+            agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
             stage = c.get("stage", "")
             writer.writerow([name, email, phone, agent, stage])
     st.success(f"Exported {len(contacts)} contacts to {filename}")
