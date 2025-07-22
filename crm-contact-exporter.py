@@ -3,89 +3,85 @@ import requests
 import csv
 from io import StringIO
 
-st.title("Follow Up Boss Contact Export Tool")
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
+FUB_API_KEY = st.secrets["FUB_API_KEY"]
+BASE_URL = "https://api.followupboss.com/v1"
 
-# User input
-api_key = st.text_input("Enter your Follow Up Boss API Key:", type="password")
-limit = st.number_input("Number of contacts to fetch:", min_value=1, max_value=10000, value=1000)
-assigned_user_id = st.text_input("Assigned User ID (optional):")
+HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Authorization": f"Basic {FUB_API_KEY}"
+}
 
-def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None):
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json"
-    }
+# -------------------------------
+# FUNCTIONS
+# -------------------------------
+def get_agents():
+    response = requests.get(f"{BASE_URL}/users", headers=HEADERS)
+    agents = response.json()
+    return agents["users"]
 
-    contacts = []
-    offset = None
+def get_contacts_by_agent(agent_id=None):
+    page = 1
+    per_page = 100
+    all_contacts = []
 
     while True:
-        params = {"limit": 100}
-        if assigned_user_id:
-            params["assignedUserId"] = assigned_user_id
-        if offset:
-            params["offset"] = offset
-
-        response = requests.get("https://api.followupboss.com/v1/people", headers=headers, params=params)
+        params = {"page": page, "limit": per_page}
+        if agent_id != "unassigned":
+            params["assignedUserId"] = agent_id
+        response = requests.get(f"{BASE_URL}/people", headers=HEADERS, params=params)
         if response.status_code != 200:
-            st.error(f"Failed to fetch contacts: {response.text}")
             break
+        contacts = response.json()["people"]
 
-        data = response.json()
-        if not data.get("people"):
+        # Filter unassigned if needed
+        if agent_id == "unassigned":
+            contacts = [c for c in contacts if not c.get("assignedUserId")]
+
+        all_contacts.extend(contacts)
+        if len(contacts) < per_page:
             break
+        page += 1
+    return all_contacts
 
-        contacts.extend(data["people"])
-        if len(contacts) >= limit:
-            break
-
-        offset = data.get("next")
-
-        if not offset:
-            break
-
-    return contacts[:limit]
-
-def export_to_csv(contacts, filename="contacts.csv"):
-    if not contacts:
-        st.warning("No contacts found to export.")
-        return
-
+def export_contacts_to_csv(contacts, filename):
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"])
 
-    for c in contacts:
-        name = c.get("name", "")
-        email = c["emails"][0]["value"] if c.get("emails") else ""
-        phone = c["phones"][0]["value"] if c.get("phones") else ""
-        address = c["addresses"][0]["street"] if c.get("addresses") else ""
-        assigned_agent = c.get("assignedTo", {}).get("name", "Unassigned")
-        stage = c.get("stage", "")
-
-        writer.writerow([name, email, phone, address, assigned_agent, stage])
+    for contact in contacts:
+        name = contact.get("name", "")
+        email = contact["emails"][0]["value"] if contact.get("emails") else ""
+        phone = contact["phones"][0]["value"] if contact.get("phones") else ""
+        address = contact.get("primaryAddress", {}).get("street", "")
+        agent = contact.get("assignedUser", {}).get("name", "Unassigned")
+        stage = contact.get("stage", "")
+        writer.writerow([name, email, phone, address, agent, stage])
 
     st.download_button(
-        label=f"Download {filename}",
+        label="Download CSV",
         data=output.getvalue(),
         file_name=filename,
         mime="text/csv"
     )
 
+# -------------------------------
+# UI
+# -------------------------------
+st.title("FUB Contact Export Tool")
+
+agents = get_agents()
+agent_map = {agent["name"]: agent["id"] for agent in agents}
+agent_names = list(agent_map.keys())
+agent_names.insert(0, "Unassigned")  # Add this line to include Unassigned
+
+selected_agent = st.selectbox("Select an Agent (or Unassigned)", agent_names)
+
 if st.button("Fetch and Export Contacts"):
-    contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id)
-
-    if assigned_user_id:
-        export_to_csv(contacts)
-    else:
-        # Group all contacts by agent name or "Unassigned"
-        grouped_contacts = {}
-        for c in contacts:
-            assigned = c.get("assignedTo")
-            agent_name = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else "Unassigned"
-            grouped_contacts.setdefault(agent_name, []).append(c)
-
-        for agent_name, agent_contacts in grouped_contacts.items():
-            safe_name = agent_name.replace(" ", "_").replace("@", "_").replace(".", "_").lower()
-            filename = f"{safe_name}_contacts.csv"
-            export_to_csv(agent_contacts, filename)
+    with st.spinner("Fetching contacts..."):
+        agent_id = agent_map.get(selected_agent, "unassigned")
+        contacts = get_contacts_by_agent(agent_id)
+        export_contacts_to_csv(contacts, f"{selected_agent.replace(' ', '_')}_contacts.csv")
