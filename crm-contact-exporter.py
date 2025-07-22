@@ -1,144 +1,61 @@
 import streamlit as st
 import requests
-import csv
 import base64
-import time
-from io import StringIO
 
-# --- Helper: Auth Header ---
-def get_auth_header(api_key):
-    token = base64.b64encode(f"{api_key}:".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Accept": "application/json"}
+# API key
+api_key = st.secrets["fub_api_key"]
 
-# --- Fetch Agents ---
-def fetch_follow_up_boss_agents(api_key):
-    headers = get_auth_header(api_key)
-    url = "https://api.followupboss.com/v1/users"
-    agents = []
-    next_token = None
+# Set base URL and headers
+base_url = "https://api.followupboss.com/v1"
+headers = {
+    "Authorization": f"Basic {base64.b64encode(f'{api_key}:'.encode()).decode()}",
+    "Content-Type": "application/json"
+}
 
-    with st.spinner("Fetching agents..."):
-        while True:
-            params = {"limit": 100}
-            if next_token:
-                params["next"] = next_token
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error(f"Error fetching agents: {response.status_code} {response.text}")
-                break
-            data = response.json()
-            agents.extend(data.get("users", []))
-            meta = data.get("_metadata", {})
-            next_token = meta.get("next")
-            if not next_token:
-                break
-    return agents
-
-# --- Fetch Ponds ---
-def fetch_ponds(api_key):
-    headers = get_auth_header(api_key)
-    url = "https://api.followupboss.com/v1/ponds"
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Error fetching ponds: {response.status_code} {response.text}")
+# Fetch Ponds
+@st.cache_data(ttl=3600)
+def fetch_ponds():
+    try:
+        response = requests.get(f"{base_url}/ponds", headers=headers)
+        response.raise_for_status()
+        return response.json().get("ponds", [])
+    except Exception as e:
+        st.error(f"Failed to fetch ponds: {e}")
         return []
-    return response.json().get("ponds", [])
 
-# --- Fetch All Contacts ---
-def fetch_contacts(api_key):
-    headers = get_auth_header(api_key)
-    url = "https://api.followupboss.com/v1/people?limit=100"
-    contacts = []
+# Fetch contacts from a specific pond
+def fetch_contacts_from_pond(pond_id):
+    try:
+        response = requests.get(f"{base_url}/ponds/{pond_id}/people", headers=headers)
+        response.raise_for_status()
+        return response.json().get("people", [])
+    except Exception as e:
+        st.error(f"Failed to fetch contacts from pond: {e}")
+        return []
 
-    with st.spinner("Fetching contacts..."):
-        while url:
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
-                break
-            data = response.json()
-            contacts.extend(data.get("people", []))
-            url = data.get("links", {}).get("next")
-            time.sleep(0.2)
-    return contacts
+# Load ponds and find Brighton Office
+ponds = fetch_ponds()
+pond_options = {pond['name']: pond['id'] for pond in ponds}
+brighton_pond_id = pond_options.get("Brighton Office")
 
-# --- Export to CSV ---
-def export_to_csv(contacts, filename="contacts.csv"):
-    if not contacts:
-        st.warning("No contacts to export.")
-        return
-
-    output = StringIO()
-    writer = csv.writer(output)
-    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent"]
-    writer.writerow(headers)
-
-    for c in contacts:
-        name = c.get("name", "")
-        email = ", ".join(e["value"] for e in c.get("emails", [])) if c.get("emails") else ""
-        phone = ", ".join(p["value"] for p in c.get("phones", [])) if c.get("phones") else ""
-        address_obj = c.get("addresses", [])
-        if address_obj and isinstance(address_obj, list) and address_obj[0]:
-            addr = address_obj[0]
-            address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}".strip(", ")
+# UI: Brighton Pond Export
+st.subheader("🔹 Brighton Office Pond Contacts")
+if brighton_pond_id:
+    if st.button("Fetch Contacts from Brighton Office Pond"):
+        contacts = fetch_contacts_from_pond(brighton_pond_id)
+        if contacts:
+            st.success(f"Found {len(contacts)} contacts in Brighton Office pond.")
+            for contact in contacts:
+                st.json({
+                    "Name": f"{contact.get('firstName', '')} {contact.get('lastName', '')}",
+                    "Email": contact.get("emails", [{}])[0].get("value", ""),
+                    "Phone": contact.get("phones", [{}])[0].get("value", ""),
+                    "Stage": contact.get("stage", ""),
+                    "Tags": contact.get("tags", []),
+                })
         else:
-            address = ""
-        stage = c.get("stage", "")
-        assigned = c.get("assignedTo")
-        assigned_agent = assigned.get("name", "") if isinstance(assigned, dict) else ""
-        writer.writerow([name, email, phone, address, stage, assigned_agent])
+            st.warning("No contacts found in this pond.")
+else:
+    st.error("Brighton Office pond not found. Make sure the pond exists and is spelled exactly.")
 
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
-
-    st.download_button(
-        label="📁 Download CSV",
-        data=output.getvalue(),
-        file_name=filename,
-        mime="text/csv",
-        key="download-csv"
-    )
-
-# --- App UI ---
-st.title("📇 Follow Up Boss Contact Exporter")
-
-api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
-
-if api_key:
-    agents = fetch_follow_up_boss_agents(api_key)
-    ponds = fetch_ponds(api_key)
-
-    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents if a.get("email")}
-    pond_map = {p["name"]: p["id"] for p in ponds}
-
-    filter_type = st.radio("Filter contacts by:", ["Agent", "Pond"])
-
-    selected_option = None
-    if filter_type == "Agent":
-        agent_options = ["All Agents"] + list(agent_map.keys())
-        selected_option = st.selectbox("Select Agent:", agent_options)
-    elif filter_type == "Pond":
-        if not pond_map:
-            st.warning("No ponds found. Check permissions.")
-        else:
-            selected_option = st.selectbox("Select Pond:", list(pond_map.keys()))
-
-    contacts_to_export = None
-
-    if st.button("Fetch Contacts"):
-        all_contacts = fetch_contacts(api_key)
-
-        if filter_type == "Agent":
-            if selected_option == "All Agents":
-                filtered_contacts = all_contacts
-            else:
-                agent_id = agent_map[selected_option]
-                filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
-        elif filter_type == "Pond":
-            pond_id = pond_map[selected_option]
-            filtered_contacts = [c for c in all_contacts if c.get("pond", {}).get("id") == pond_id]
-
-        st.write(f"Contacts matched: {len(filtered_contacts)}")
-        contacts_to_export = filtered_contacts
-
-    if contacts_to_export:
-        export_to_csv(contacts_to_export, filename=f"{selected_option.replace(' ', '_')}_contacts.csv")
+# Optional: Continue with the rest of the app...
