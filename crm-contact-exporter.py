@@ -46,7 +46,7 @@ def fetch_follow_up_boss_contacts(api_key):
                 break
             data = response.json()
             contacts.extend(data.get("people", []))
-            url = data.get("links", {}).get("next")
+            url = data.get("links", {}).get("next")  # pagination via next link
             time.sleep(0.2)
     st.success(f"Fetched {len(contacts)} contacts total")
     return contacts
@@ -85,13 +85,20 @@ def export_to_csv(contacts, filename="contacts.csv"):
         key="download-csv"
     )
 
+def is_unassigned(contact):
+    assigned = contact.get("assignedTo")
+    if assigned is None:
+        return True
+    if isinstance(assigned, str) and assigned.strip() == "":
+        return True
+    return False
+
 st.title("📇 Follow Up Boss Contact Exporter")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 
 if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
-    # Map by agent name string (not ID)
     agent_map = {f"{a['name']} ({a['email']})": a["name"] for a in agents}
 
     options = ["All Agents", "Brighton Office Pond"] + list(agent_map.keys())
@@ -99,18 +106,22 @@ if api_key:
 
     contacts_to_export = None
 
-    # Debug button to inspect assignedTo fields of first 20 contacts
-    if st.button("Debug AssignedTo Fields"):
+    if st.button("Debug assignedTo values"):
         all_contacts = fetch_follow_up_boss_contacts(api_key)
-        for i, c in enumerate(all_contacts[:20]):
-            st.write(f"{i+1}. Name: {c.get('name')}, assignedTo: {repr(c.get('assignedTo'))}")
+        assigned_values = set()
+        for c in all_contacts:
+            val = c.get("assignedTo")
+            if val is None:
+                assigned_values.add("<None>")
+            elif isinstance(val, str):
+                assigned_values.add(f"'{val}'")
+            else:
+                assigned_values.add(str(val))
+        st.write("Unique assignedTo values found:")
+        st.write(sorted(assigned_values))
 
     if st.button("Fetch Contacts"):
         all_contacts = fetch_follow_up_boss_contacts(api_key)
-
-        def is_unassigned(contact):
-            assigned = contact.get("assignedTo")
-            return assigned is None or assigned == ""
 
         if selected_option == "All Agents":
             filtered_contacts = all_contacts
