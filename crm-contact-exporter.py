@@ -1,105 +1,130 @@
 import streamlit as st
 import requests
 import csv
-import io
+import base64
+import time
 
-# --- Streamlit UI ---
-st.title("Follow Up Boss Pond Contact Exporter")
-api_key = st.text_input("Enter your FUB API Key", type="password")
+CSV_FILE = "contacts.csv"
 
-# Fixed tag used for filtering
-tag_name = "BRIGHTONPOND"
-
-# --- Fetch All Agents ---
-def fetch_agents(api_key):
+# 🔁 Fetch all agents using pagination
+def fetch_follow_up_boss_agents(api_key):
+    headers = {
+        "Authorization": "Basic " + base64.b64encode(f"{api_key}:".encode()).decode()
+    }
     url = "https://api.followupboss.com/v1/users"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("users", [])
+    agents = []
+    next_token = None
 
-# --- Fetch All Contacts (paginated) ---
-def fetch_contacts(api_key):
-    all_contacts = []
-    limit = 100
+    with st.spinner("Fetching all agents..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Error fetching agents: {response.status_code} {response.text}")
+                break
+            data = response.json()
+            agents.extend(data.get("users", []))
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
+
+    st.success(f"Fetched {len(agents)} agents")
+    return agents
+
+# 🔁 Fetch contacts with optional agent + tag filter
+def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None, tag_filter=None):
+    headers = {
+        "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
+    }
+    url = "https://api.followupboss.com/v1/people"
+    contacts = []
     offset = 0
-    headers = {"Authorization": f"Bearer {api_key}"}
+    with st.spinner("Fetching contacts from Follow Up Boss..."):
+        while len(contacts) < limit:
+            params = {"limit": 100, "offset": offset}
+            if assigned_user_id:
+                params["assignedUserId"] = assigned_user_id
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+                break
+            batch = response.json().get("people", [])
+            if not batch:
+                break
 
-    while True:
-        url = f"https://api.followupboss.com/v1/people?limit={limit}&offset={offset}"
-        response = requests.get(url, headers=headers)
-        if response.status_code == 400:
-            break  # End of pagination
-        response.raise_for_status()
-        data = response.json()
-        contacts = data.get("people", [])
-        if not contacts:
-            break
-        all_contacts.extend(contacts)
-        offset += limit
+            # Filter by tag if needed
+            if tag_filter:
+                batch = [
+                    c for c in batch
+                    if any(tag.get("name", "").upper() == tag_filter.upper() for tag in c.get("tags", []))
+                ]
 
-    return all_contacts
+            contacts.extend(batch)
+            offset += 100
+            st.progress(min(len(contacts) / limit, 1.0))
+            time.sleep(0.2)
 
-# --- Fetch Contacts with Tag ---
-def fetch_contacts_with_tag(api_key, tag_name):
-    all_contacts = fetch_contacts(api_key)
-    matched_contacts = []
-    for c in all_contacts:
-        tags = c.get("tags", [])
-        # If tags are strings
-        if any(tag.lower() == tag_name.lower() for tag in tags if isinstance(tag, str)):
-            matched_contacts.append(c)
-        # If tags are dicts
-        elif any(tag.get("name", "").lower() == tag_name.lower() for tag in tags if isinstance(tag, dict)):
-            matched_contacts.append(c)
-    return matched_contacts
+    return contacts[:limit]
 
-# --- CSV Export ---
-def contacts_to_csv(contacts):
-    output = io.StringIO()
-    writer = csv.writer(output)
-    header = ["Name", "Email", "Phone", "Tags", "Stage", "Source", "Assigned To", "Street", "City", "State", "Zip"]
-    writer.writerow(header)
-    for c in contacts:
-        name = c.get("name", "")
-        email = c.get("emails", [{}])[0].get("value", "")
-        phone = c.get("phones", [{}])[0].get("value", "")
-        tags = ", ".join(
-            tag.get("name") if isinstance(tag, dict) else tag for tag in c.get("tags", [])
-        )
-        stage = c.get("stage", "")
-        source = c.get("source", "")
-        assigned = c.get("assignedTo", {}).get("name", "")
-        address = c.get("addresses", [{}])[0]
-        street = address.get("street", "")
-        city = address.get("city", "")
-        state = address.get("state", "")
-        zip_code = address.get("zipCode", "")
-        row = [name, email, phone, tags, stage, source, assigned, street, city, state, zip_code]
-        writer.writerow(row)
-    return output.getvalue()
+# ✅ Export to CSV
+def export_to_csv(contacts, filename=CSV_FILE):
+    if not contacts:
+        st.warning("No contacts to export.")
+        return
 
-# --- Main Logic ---
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        headers = ["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"]
+        writer.writerow(headers)
+        for c in contacts:
+            name = c.get("name", "")
+            email = ", ".join(e["value"] for e in c.get("emails", []))
+            phone = ", ".join(p["value"] for p in c.get("phones", []))
+
+            address_obj = c.get("addresses", [])
+            if address_obj and isinstance(address_obj, list) and address_obj[0]:
+                addr = address_obj[0]
+                address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}"
+            else:
+                address = ""
+
+            assigned = c.get("assignedTo")
+            agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
+            stage = c.get("stage", "")
+            writer.writerow([name, email, phone, address, agent, stage])
+
+    st.success(f"Exported {len(contacts)} contacts to {filename}")
+
+    with open(filename, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
+# 🚀 Streamlit UI
+st.title("📇 Follow Up Boss Contact Exporter")
+
+api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+limit = st.number_input("Number of contacts to fetch", min_value=1, max_value=5000, value=500)
+
 if api_key:
-    try:
-        agents = fetch_agents(api_key)
-        agent_names = [a["name"] for a in agents]
-        selected_agent = st.selectbox("Agent (for reference only)", ["All"] + agent_names)
-        st.write("✅ Brighton Office pond found:", tag_name)
+    agents = fetch_follow_up_boss_agents(api_key)
+    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
+    agent_names = ["All Agents"] + list(agent_map.keys())
+    selected_agent = st.selectbox("Filter contacts by agent", agent_names)
 
-        contacts = fetch_contacts_with_tag(api_key, tag_name)
-        st.success(f"Found {len(contacts)} contacts tagged with '{tag_name}'")
+    # ✅ Tag filter checkbox
+    use_tag_filter = st.checkbox("Filter by tag", value=True)
+    tag_input = "BRIGHTONPOND"
+    if use_tag_filter:
+        tag_input = st.text_input("Tag to filter by", value="BRIGHTONPOND")
 
-        if contacts:
-            csv_data = contacts_to_csv(contacts)
-            st.download_button(
-                label="📥 Download Contacts CSV",
-                data=csv_data,
-                file_name="brighton_pond_contacts.csv",
-                mime="text/csv"
-            )
-        else:
-            st.warning("No contacts found with that tag.")
-    except Exception as e:
-        st.error(f"Error: {e}")
+    assigned_user_id = None if selected_agent == "All Agents" else agent_map[selected_agent]
+
+    if st.button("Fetch and Export Contacts"):
+        tag_filter = tag_input.strip() if use_tag_filter else None
+        contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id, tag_filter)
+        st.write(f"Contacts matched: {len(contacts)}")
+        export_to_csv(contacts)
