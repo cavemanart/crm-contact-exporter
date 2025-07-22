@@ -70,7 +70,7 @@ def export_to_csv(contacts, filename="contacts.csv"):
 
     output = StringIO()
     writer = csv.writer(output)
-    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent", "Pond"]
+    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent", "Pond", "Tags"]
     writer.writerow(headers)
 
     for c in contacts:
@@ -86,9 +86,10 @@ def export_to_csv(contacts, filename="contacts.csv"):
         stage = c.get("stage", "")
         assigned = c.get("assignedTo")
         assigned_agent = assigned.get("name", "") if isinstance(assigned, dict) else ""
-        pond = c.get("pond", {}).get("name", "")  # ✅ Extract pond name
+        pond = c.get("pond", {}).get("name", "")
+        tags = ", ".join(c.get("tags", []))
 
-        writer.writerow([name, email, phone, address, stage, assigned_agent, pond])
+        writer.writerow([name, email, phone, address, stage, assigned_agent, pond, tags])
 
     st.success(f"Exported {len(contacts)} contacts to {filename}")
 
@@ -112,40 +113,47 @@ if api_key:
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents if a.get("email")}
     pond_map = {p["name"]: p["id"] for p in ponds}
 
-    filter_type = st.radio("Filter contacts by:", ["Agent", "Pond"])
+    filter_type = st.radio("Filter contacts by:", ["Agent", "Pond", "Tag"])
 
     selected_option = None
-    if filter_type == "Agent":
-        agent_options = ["All Agents"] + list(agent_map.keys())
-        selected_option = st.selectbox("Select Agent:", agent_options)
-    elif filter_type == "Pond":
-        if not pond_map:
-            st.warning("No ponds found. Check permissions.")
-        else:
-            selected_option = st.selectbox("Select Pond:", list(pond_map.keys()))
-
-    contacts_to_export = None
+    tag_options = []
+    all_contacts = []
 
     if st.button("Fetch Contacts"):
         all_contacts = fetch_contacts(api_key)
 
         if filter_type == "Agent":
+            agent_options = ["All Agents"] + list(agent_map.keys())
+            selected_option = st.selectbox("Select Agent:", agent_options)
             if selected_option == "All Agents":
                 filtered_contacts = all_contacts
             else:
                 agent_id = agent_map[selected_option]
-                filtered_contacts = [
-                    c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id
-                ]
+                filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
+
         elif filter_type == "Pond":
-            pond_id = pond_map[selected_option]
-            filtered_contacts = [
-                c for c in all_contacts if c.get("pond", {}).get("id") == pond_id
-            ]
+            if not pond_map:
+                st.warning("No ponds found. Check permissions.")
+                filtered_contacts = []
+            else:
+                selected_option = st.selectbox("Select Pond:", list(pond_map.keys()))
+                pond_id = pond_map[selected_option]
+                filtered_contacts = [c for c in all_contacts if c.get("pond", {}).get("id") == pond_id]
+
+        elif filter_type == "Tag":
+            tag_set = set()
+            for c in all_contacts:
+                tag_set.update(c.get("tags", []))
+            tag_options = sorted(tag_set)
+            if not tag_options:
+                st.warning("No tags found.")
+                filtered_contacts = []
+            else:
+                selected_option = st.selectbox("Select Tag:", tag_options)
+                filtered_contacts = [c for c in all_contacts if selected_option in c.get("tags", [])]
 
         st.write(f"Contacts matched: {len(filtered_contacts)}")
-        contacts_to_export = filtered_contacts
 
-    if contacts_to_export:
-        safe_filename = selected_option.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "")
-        export_to_csv(contacts_to_export, filename=f"{filter_type}_{safe_filename}_contacts.csv")
+        if filtered_contacts:
+            safe_filename = selected_option.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "") if selected_option else "All"
+            export_to_csv(filtered_contacts, filename=f"{filter_type}_{safe_filename}_contacts.csv")
