@@ -5,14 +5,12 @@ import base64
 import time
 from io import StringIO
 
-CSV_FILE = "contacts.csv"
-
-# Function to encode API key for Basic Auth
+# Encode API key for Basic Auth header
 def get_auth_header(api_key):
     token = base64.b64encode(f"{api_key}:".encode()).decode()
     return {"Authorization": f"Basic {token}"}
 
-# 🔁 Fetch all agents using pagination
+# Fetch all agents
 def fetch_follow_up_boss_agents(api_key):
     headers = get_auth_header(api_key)
     url = "https://api.followupboss.com/v1/users"
@@ -34,65 +32,54 @@ def fetch_follow_up_boss_agents(api_key):
             next_token = meta.get("next")
             if not next_token:
                 break
-
     st.success(f"Fetched {len(agents)} agents")
     return agents
 
-# 🔁 Fetch contacts, optionally filtered by agent, using nextLink pagination
-def fetch_follow_up_boss_contacts(api_key, assigned_user_id=None):
+# Fetch all contacts with nextLink pagination
+def fetch_follow_up_boss_contacts(api_key):
     headers = get_auth_header(api_key)
     url = "https://api.followupboss.com/v1/people?limit=100"
     contacts = []
 
-    with st.spinner("Fetching contacts from Follow Up Boss..."):
+    with st.spinner("Fetching all contacts from Follow Up Boss..."):
         while url:
-            params = {}
-            if assigned_user_id:
-                # If filtering by agent, append param only for first call
-                if "?" in url:
-                    url += f"&assignedUserId={assigned_user_id}"
-                else:
-                    url += f"?assignedUserId={assigned_user_id}"
-
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers)
             if response.status_code != 200:
                 st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
                 break
             data = response.json()
-            batch = data.get("people", [])
-            contacts.extend(batch)
-            url = data.get("links", {}).get("next")  # next page link or None
-
-            time.sleep(0.2)  # Be kind to API rate limits
-
+            contacts.extend(data.get("people", []))
+            url = data.get("links", {}).get("next")
+            time.sleep(0.2)  # avoid hitting rate limits
+    st.success(f"Fetched {len(contacts)} contacts total")
     return contacts
 
-# ✅ Export to CSV
-def export_to_csv(contacts, filename=CSV_FILE):
+# Export contacts to CSV with Pool column
+def export_to_csv(contacts, filename="contacts.csv"):
     if not contacts:
         st.warning("No contacts to export.")
         return
 
     output = StringIO()
     writer = csv.writer(output)
-    headers = ["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"]
+    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent", "Pool"]
     writer.writerow(headers)
+
     for c in contacts:
         name = c.get("name", "")
         email = ", ".join(e["value"] for e in c.get("emails", [])) if c.get("emails") else ""
         phone = ", ".join(p["value"] for p in c.get("phones", [])) if c.get("phones") else ""
-
         address_obj = c.get("addresses", [])
         if address_obj and isinstance(address_obj, list) and address_obj[0]:
             addr = address_obj[0]
             address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}".strip(", ")
         else:
             address = ""
-
-        assigned = c.get("assignedTo")
-        agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
         stage = c.get("stage", "")
-        writer.writerow([name, email, phone, address, agent, stage])
+        assigned = c.get("assignedTo")
+        assigned_agent = assigned.get("name", "") if isinstance(assigned, dict) else ""
+        pool = c.get("pool", "")
+        writer.writerow([name, email, phone, address, stage, assigned_agent, pool])
 
     st.success(f"Exported {len(contacts)} contacts to {filename}")
 
@@ -103,7 +90,7 @@ def export_to_csv(contacts, filename=CSV_FILE):
         mime="text/csv"
     )
 
-# 🚀 Streamlit UI
+# Streamlit UI
 st.title("📇 Follow Up Boss Contact Exporter")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
@@ -111,25 +98,24 @@ api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
-    agent_names = ["All Agents", "Unassigned"] + list(agent_map.keys())
-    selected_agent = st.selectbox("Filter contacts by agent", agent_names)
 
-    assigned_user_id = None
-    if selected_agent == "Unassigned":
-        assigned_user_id = "unassigned"  # Special handling below
-    elif selected_agent != "All Agents":
-        assigned_user_id = agent_map[selected_agent]
+    # Dropdown options
+    options = ["All Agents", "Unassigned", "Brighton Office Pond"] + list(agent_map.keys())
+    selected_option = st.selectbox("Filter contacts by:", options)
 
     if st.button("Fetch and Export Contacts"):
-        contacts = []
-        if assigned_user_id == "unassigned":
-            # Fetch all contacts and filter unassigned client-side
-            all_contacts = fetch_follow_up_boss_contacts(api_key)
-            contacts = [c for c in all_contacts if not c.get("assignedTo")]
-        elif assigned_user_id is None:
-            # All agents — fetch all contacts without filter
-            contacts = fetch_follow_up_boss_contacts(api_key)
-        else:
-            contacts = fetch_follow_up_boss_contacts(api_key, assigned_user_id)
+        all_contacts = fetch_follow_up_boss_contacts(api_key)
 
-        export_to_csv(contacts)
+        if selected_option == "All Agents":
+            filtered_contacts = all_contacts
+        elif selected_option == "Unassigned":
+            filtered_contacts = [c for c in all_contacts if not c.get("assignedTo")]
+        elif selected_option == "Brighton Office Pond":
+            filtered_contacts = [c for c in all_contacts if c.get("pool") == "Brighton Office Pond"]
+        else:
+            # Filter by selected agent ID
+            agent_id = agent_map[selected_option]
+            filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
+
+        st.write(f"Contacts matched: {len(filtered_contacts)}")
+        export_to_csv(filtered_contacts, filename=f"{selected_option.replace(' ', '_')}_contacts.csv")
