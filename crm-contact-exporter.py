@@ -37,19 +37,6 @@ def fetch_follow_up_boss_agents(api_key):
                 break
     return agents
 
-# --- Fetch Ponds ---
-def fetch_ponds(api_key):
-    headers = get_auth_header(api_key)
-    url = "https://api.followupboss.com/v1/ponds"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 401:
-        st.error("Unauthorized. Check your API key.")
-        return []
-    if response.status_code != 200:
-        st.error(f"Error fetching ponds: {response.status_code} {response.text}")
-        return []
-    return response.json().get("ponds", [])
-
 # --- Fetch All Contacts (paginated) ---
 def fetch_contacts(api_key):
     headers = get_auth_header(api_key)
@@ -71,10 +58,14 @@ def fetch_contacts(api_key):
             time.sleep(0.2)
     return contacts
 
-# --- Filter Contacts for Brighton Office Pond ---
-def fetch_brighton_pond_contacts(api_key):
+# --- Filter Contacts by Tag ---
+def fetch_contacts_with_tag(api_key, tag_name="BRIGHTONPOND"):
     all_contacts = fetch_contacts(api_key)
-    return [c for c in all_contacts if c.get("pond", {}).get("name") == "Brighton Office Pond"]
+    tagged_contacts = [
+        c for c in all_contacts
+        if any(tag.get("name", "").lower() == tag_name.lower() for tag in c.get("tags", []))
+    ]
+    return tagged_contacts
 
 # --- Export to CSV ---
 def export_to_csv(contacts, filename="contacts.csv"):
@@ -119,14 +110,12 @@ api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 
 if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
-    ponds = fetch_ponds(api_key)
 
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents if a.get("email")}
-    pond_map = {p["name"]: p["id"] for p in ponds}
 
     st.divider()
     st.subheader("🔍 Filter Contacts")
-    filter_type = st.radio("Filter contacts by:", ["Agent", "Brighton Office Pond"])
+    filter_type = st.radio("Filter contacts by:", ["Agent", "BrightonPond Tag"])
 
     selected_option = None
     contacts_to_export = None
@@ -144,7 +133,7 @@ if api_key:
                 agent_id = agent_map[selected_option]
                 filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
         else:
-            filtered_contacts = fetch_brighton_pond_contacts(api_key)
+            filtered_contacts = fetch_contacts_with_tag(api_key, tag_name="BRIGHTONPOND")
 
         st.write(f"Contacts matched: {len(filtered_contacts)}")
         contacts_to_export = filtered_contacts
