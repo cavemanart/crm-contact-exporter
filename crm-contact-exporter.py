@@ -44,7 +44,7 @@ def fetch_ponds(api_key):
         return []
     return response.json().get("ponds", [])
 
-# --- Fetch All Contacts (for agents) ---
+# --- Fetch All Contacts (for agents and pond filtering) ---
 def fetch_contacts(api_key):
     headers = get_auth_header(api_key)
     url = "https://api.followupboss.com/v1/people?limit=100"
@@ -62,28 +62,11 @@ def fetch_contacts(api_key):
             time.sleep(0.2)
     return contacts
 
-# --- Fetch Contacts from Pond (via proper endpoint) ---
+# --- Fetch Contacts from Pond (Manually filter) ---
 def fetch_contacts_from_pond(api_key, pond_id):
-    headers = get_auth_header(api_key)
-    contacts = []
-    limit = 100
-    offset = 0
-
-    with st.spinner(f"Fetching contacts from pond {pond_id}..."):
-        while True:
-            url = f"https://api.followupboss.com/v1/ponds/{pond_id}/people?limit={limit}&offset={offset}"
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                st.error(f"Error fetching pond contacts: {response.status_code} {response.text}")
-                break
-            data = response.json()
-            batch = data.get("people", [])
-            contacts.extend(batch)
-            if len(batch) < limit:
-                break
-            offset += limit
-            time.sleep(0.2)
-    return contacts
+    all_contacts = fetch_contacts(api_key)
+    pond_contacts = [c for c in all_contacts if c.get("pond", {}).get("id") == pond_id]
+    return pond_contacts
 
 # --- Export to CSV ---
 def export_to_csv(contacts, filename="contacts.csv"):
