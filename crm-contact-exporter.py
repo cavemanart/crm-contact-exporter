@@ -87,7 +87,8 @@ def export_to_csv(contacts, filename="contacts.csv"):
         label="📁 Download CSV",
         data=output.getvalue(),
         file_name=filename,
-        mime="text/csv"
+        mime="text/csv",
+        key="download-csv"
     )
 
 # Streamlit UI
@@ -99,17 +100,17 @@ if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
 
-    # Dropdown options
-    options = ["All Agents", "Unassigned", "Brighton Office Pond"] + list(agent_map.keys())
+    # Dropdown options — removed Unassigned
+    options = ["All Agents", "Brighton Office Pond"] + list(agent_map.keys())
     selected_option = st.selectbox("Filter contacts by:", options)
 
-    if st.button("Fetch and Export Contacts"):
+    contacts_to_export = None
+
+    if st.button("Fetch Contacts"):
         all_contacts = fetch_follow_up_boss_contacts(api_key)
 
         if selected_option == "All Agents":
             filtered_contacts = all_contacts
-        elif selected_option == "Unassigned":
-            filtered_contacts = [c for c in all_contacts if not c.get("assignedTo")]
         elif selected_option == "Brighton Office Pond":
             filtered_contacts = [c for c in all_contacts if c.get("pool") == "Brighton Office Pond"]
         else:
@@ -118,4 +119,7 @@ if api_key:
             filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
 
         st.write(f"Contacts matched: {len(filtered_contacts)}")
-        export_to_csv(filtered_contacts, filename=f"{selected_option.replace(' ', '_')}_contacts.csv")
+        contacts_to_export = filtered_contacts
+
+    if contacts_to_export:
+        export_to_csv(contacts_to_export, filename=f"{selected_option.replace(' ', '_')}_contacts.csv")
