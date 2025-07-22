@@ -1,112 +1,98 @@
 import streamlit as st
 import requests
-import pandas as pd
-import base64
+import csv
+import io
 
-# --- Auth Headers ---
-def get_headers(api_key):
-    return {
-        "Authorization": f"Basic {base64.b64encode(api_key.encode()).decode()}",
-        "Content-Type": "application/json"
-    }
+# Your Follow Up Boss API key
+api_key = st.secrets["FUB_API_KEY"]
 
-# --- Fetch All Agents ---
-def fetch_agents(api_key):
-    url = "https://api.followupboss.com/v1/users"
-    headers = get_headers(api_key)
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()["users"]
-
-# --- Fetch All Ponds ---
-def fetch_ponds(api_key):
-    url = "https://api.followupboss.com/v1/ponds"
-    headers = get_headers(api_key)
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()["ponds"]
-
-# --- Fetch All Contacts ---
+# --- Fetch All Contacts with Pagination ---
 def fetch_contacts(api_key):
-    url = "https://api.followupboss.com/v1/people"
-    headers = get_headers(api_key)
     contacts = []
     limit = 100
     offset = 0
+    headers = {
+        "Authorization": f"Basic {api_key}"
+    }
+
     while True:
-        params = {"limit": limit, "offset": offset}
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        batch = response.json()["people"]
-        if not batch:
+        url = f"https://api.followupboss.com/v1/people?limit={limit}&offset={offset}"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            st.error(f"HTTP Error: {response.status_code} - {response.text}")
             break
-        contacts.extend(batch)
+        data = response.json()
+        if not data.get("people"):
+            break
+        contacts.extend(data["people"])
         offset += limit
     return contacts
 
-# --- Filter Contacts by Pond ---
-def fetch_contacts_from_pond(api_key, pond_id):
+# --- Manually Filter for Brighton Office Pond ---
+def fetch_brighton_pond_contacts(api_key):
     all_contacts = fetch_contacts(api_key)
-    pond_contacts = [c for c in all_contacts if c.get("pond", {}).get("id") == pond_id]
-    return pond_contacts
+    brighton_contacts = [
+        c for c in all_contacts if c.get("pond", {}).get("name") == "Brighton Office Pond"
+    ]
+    return brighton_contacts
 
-# --- CSV Export ---
-def convert_contacts_to_csv(contacts):
-    rows = []
-    for c in contacts:
-        row = {
-            "Name": f"{c.get('firstName', '')} {c.get('lastName', '')}",
-            "Email": c.get("primaryEmail", ""),
-            "Phone": c.get("primaryPhone", ""),
-            "Stage": c.get("stage", ""),
-            "Source": c.get("source", ""),
-            "Assigned Agent": c.get("assignedTo", {}).get("name", ""),
-            "Tags": ", ".join(c.get("tags", []))
-        }
-        address = c.get("addresses", [{}])[0]
-        row.update({
-            "Street": address.get("street", ""),
-            "City": address.get("city", ""),
-            "State": address.get("state", ""),
-            "Zip": address.get("zipCode", "")
-        })
-        rows.append(row)
-    return pd.DataFrame(rows)
+# --- Fetch All Agents (Reference Only) ---
+def fetch_agents(api_key):
+    headers = {
+        "Authorization": f"Basic {api_key}"
+    }
+    url = "https://api.followupboss.com/v1/users"
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json()["users"]
+    else:
+        return []
 
 # --- Streamlit App ---
-st.title("📇 FUB Contacts from Brighton Office Pond")
+st.title("📇 FUB Pond Contacts Exporter")
 
-api_key = st.text_input("Enter Follow Up Boss API Key", type="password")
+# Fetch agent list (for reference dropdown)
+agents = fetch_agents(api_key)
+agent_names = [a["name"] for a in agents if a.get("name")]
+selected_agent = st.selectbox("Agent (for reference only)", agent_names)
 
-if api_key:
-    try:
-        # Fetch agents and ponds
-        agents = fetch_agents(api_key)
-        ponds = fetch_ponds(api_key)
+# Fetch contacts from Brighton Office Pond
+with st.spinner("Fetching contacts from Brighton Office Pond..."):
+    contacts = fetch_brighton_pond_contacts(api_key)
 
-        agent_names = [a["name"] for a in agents]
-        selected_agent = st.selectbox("Agent (for reference only)", agent_names)
+st.success(f"✅ Brighton Office Pond found: Brighton Office Pond")
+st.write(f"Contacts found: {len(contacts)}")
 
-        # Locate Brighton Office pond
-        brighton_pond = next((p for p in ponds if "brighton office" in p["name"].lower()), None)
+# Show contact table
+if contacts:
+    st.write("### Contact Preview")
+    preview_data = [
+        {
+            "Name": c.get("name"),
+            "Email": ", ".join([e["value"] for e in c.get("emails", [])]),
+            "Phone": ", ".join([p["value"] for p in c.get("phones", [])]),
+            "Stage": c.get("stage"),
+            "Assigned To": c.get("assignedTo", {}).get("name"),
+            "Pond": c.get("pond", {}).get("name")
+        }
+        for c in contacts
+    ]
+    st.dataframe(preview_data)
 
-        if not brighton_pond:
-            st.error("❌ Brighton Office pond not found.")
-        else:
-            st.success(f"✅ Brighton Office pond found: {brighton_pond['name']}")
-            pond_contacts = fetch_contacts_from_pond(api_key, brighton_pond["id"])
-            st.write(f"📦 Contacts in Brighton Office Pond: {len(pond_contacts)}")
+    # CSV Export
+    def convert_to_csv(data):
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
+        return output.getvalue().encode("utf-8")
 
-            if pond_contacts:
-                df = convert_contacts_to_csv(pond_contacts)
-                st.dataframe(df)
-
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button("📥 Download CSV", csv, "brighton_pond_contacts.csv", "text/csv")
-            else:
-                st.warning("No contacts found in the Brighton Office pond.")
-
-    except requests.HTTPError as e:
-        st.error(f"HTTP Error: {e}")
-    except Exception as e:
-        st.error(f"Error: {e}")
+    csv_data = convert_to_csv(preview_data)
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv_data,
+        file_name="brighton_pond_contacts.csv",
+        mime="text/csv"
+    )
+else:
+    st.warning("No contacts found for Brighton Office Pond.")
