@@ -6,10 +6,10 @@ import time
 
 CSV_FILE = "contacts.csv"
 
-# 🔁 Fetch all agents using Bearer Auth
-def fetch_follow_up_boss_agents(api_key):
+# 🔁 Fetch all agents using Bearer token
+def fetch_follow_up_boss_agents(access_token):
     headers = {
-        "Authorization": f"Bearer {api_key}"
+        "Authorization": f"Bearer {access_token}"
     }
     url = "https://api.followupboss.com/v1/users"
     agents = []
@@ -34,21 +34,19 @@ def fetch_follow_up_boss_agents(api_key):
     st.success(f"Fetched {len(agents)} agents")
     return agents
 
-# 🔁 Fetch contacts with optional agent + tag filter
-def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None, tag_filter=None):
+# 🔁 Fetch contacts, optionally filtered by agent
+def fetch_follow_up_boss_contacts(access_token, limit, assigned_user_id=None):
     headers = {
-        "Authorization": f"Bearer {api_key}"
+        "Authorization": f"Bearer {access_token}"
     }
     url = "https://api.followupboss.com/v1/people"
     contacts = []
     offset = 0
-
     with st.spinner("Fetching contacts from Follow Up Boss..."):
         while len(contacts) < limit:
             params = {"limit": 100, "offset": offset}
             if assigned_user_id:
                 params["assignedUserId"] = assigned_user_id
-
             response = requests.get(url, headers=headers, params=params)
             if response.status_code != 200:
                 st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
@@ -56,19 +54,10 @@ def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None, tag_fil
             batch = response.json().get("people", [])
             if not batch:
                 break
-
-            # Filter by tag if needed
-            if tag_filter:
-                batch = [
-                    c for c in batch
-                    if any(isinstance(tag, dict) and tag.get("name", "").upper() == tag_filter.upper() for tag in c.get("tags", []))
-                ]
-
             contacts.extend(batch)
             offset += 100
             st.progress(min(len(contacts) / limit, 1.0))
             time.sleep(0.2)
-
     return contacts[:limit]
 
 # ✅ Export to CSV
@@ -108,24 +97,17 @@ def export_to_csv(contacts, filename=CSV_FILE):
 # 🚀 Streamlit UI
 st.title("📇 Follow Up Boss Contact Exporter")
 
-api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+access_token = st.text_input("Enter your Follow Up Boss Access Token", type="password")
 limit = st.number_input("Number of contacts to fetch", min_value=1, max_value=5000, value=500)
 
-if api_key:
-    agents = fetch_follow_up_boss_agents(api_key)
+if access_token:
+    agents = fetch_follow_up_boss_agents(access_token)
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
     agent_names = ["All Agents"] + list(agent_map.keys())
     selected_agent = st.selectbox("Filter contacts by agent", agent_names)
 
-    use_tag_filter = st.checkbox("Filter by tag", value=True)
-    tag_input = "BRIGHTONPOND"
-    if use_tag_filter:
-        tag_input = st.text_input("Tag to filter by", value="BRIGHTONPOND")
-
     assigned_user_id = None if selected_agent == "All Agents" else agent_map[selected_agent]
 
     if st.button("Fetch and Export Contacts"):
-        tag_filter = tag_input.strip() if use_tag_filter else None
-        contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id, tag_filter)
-        st.write(f"Contacts matched: {len(contacts)}")
+        contacts = fetch_follow_up_boss_contacts(access_token, limit, assigned_user_id)
         export_to_csv(contacts)
