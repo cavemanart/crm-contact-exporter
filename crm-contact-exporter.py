@@ -72,8 +72,7 @@ def export_to_csv(contacts, filename="contacts.csv"):
         else:
             address = ""
         stage = c.get("stage", "")
-        assigned = c.get("assignedTo")
-        assigned_agent = assigned.get("name", "") if isinstance(assigned, dict) else ""
+        assigned_agent = c.get("assignedTo", "")
         writer.writerow([name, email, phone, address, stage, assigned_agent])
 
     st.success(f"Exported {len(contacts)} contacts to {filename}")
@@ -92,7 +91,8 @@ api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 
 if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
-    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
+    # Map by agent name string (not ID)
+    agent_map = {f"{a['name']} ({a['email']})": a["name"] for a in agents}
 
     options = ["All Agents", "Brighton Office Pond"] + list(agent_map.keys())
     selected_option = st.selectbox("Filter contacts by:", options)
@@ -110,15 +110,15 @@ if api_key:
 
         def is_unassigned(contact):
             assigned = contact.get("assignedTo")
-            return assigned is None or assigned == {} or assigned == ""
+            return assigned is None or assigned == ""
 
         if selected_option == "All Agents":
             filtered_contacts = all_contacts
         elif selected_option == "Brighton Office Pond":
             filtered_contacts = [c for c in all_contacts if is_unassigned(c)]
         else:
-            agent_id = agent_map[selected_option]
-            filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
+            agent_name = agent_map[selected_option]
+            filtered_contacts = [c for c in all_contacts if c.get("assignedTo") == agent_name]
 
         st.write(f"Contacts matched: {len(filtered_contacts)}")
         contacts_to_export = filtered_contacts
