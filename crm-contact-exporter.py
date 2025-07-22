@@ -1,148 +1,107 @@
 import streamlit as st
 import requests
-import time
+import pandas as pd
 
-# ------------------------
-# Utility: Auth Header
-# ------------------------
-def get_auth_header(api_key):
-    return {"Authorization": f"Bearer {api_key}"}
+# Replace with your Follow Up Boss API key
+FUB_API_KEY = st.secrets.get("FUB_API_KEY", "YOUR_API_KEY_HERE")
+BASE_URL = "https://api.followupboss.com/v1"
 
-# ------------------------
-# Get all agents
-# ------------------------
-def fetch_agents(api_key):
-    url = "https://api.followupboss.com/v1/users"
-    headers = get_auth_header(api_key)
-    agents = []
-    offset = 0
-    limit = 100
+headers = {
+    "Authorization": f"Basic {FUB_API_KEY}",
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+}
 
-    with st.spinner("Fetching agents..."):
-        while True:
-            params = {"offset": offset, "limit": limit}
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error("Failed to fetch agents")
-                return []
-            data = response.json()
-            agents.extend(data.get("users", []))
-            if len(data.get("users", [])) < limit:
-                break
-            offset += limit
-            time.sleep(0.2)
-    st.success(f"Fetched {len(agents)} agents")
-    return agents
 
-# ------------------------
-# Get all ponds
-# ------------------------
-def fetch_ponds(api_key):
-    url = "https://api.followupboss.com/v1/ponds"
-    headers = get_auth_header(api_key)
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error("Failed to fetch ponds")
-        return []
-    data = response.json()
-    st.success(f"Fetched {len(data.get('ponds', []))} ponds")
-    return data.get("ponds", [])
-
-# ------------------------
-# Get contacts by agent
-# ------------------------
-def fetch_contacts_by_agent(api_key, agent_name):
-    url = "https://api.followupboss.com/v1/people"
-    headers = get_auth_header(api_key)
-    contacts = []
-    offset = 0
-    limit = 100
-
-    with st.spinner(f"Fetching contacts assigned to {agent_name}..."):
-        while True:
-            params = {"offset": offset, "limit": limit}
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error(f"Failed to fetch contacts: {response.status_code}")
-                return []
-            data = response.json()
-            people = data.get("people", [])
-            for person in people:
-                assigned = person.get("assignedTo", {})
-                if assigned and assigned.get("name") == agent_name:
-                    contacts.append(person)
-            if len(people) < limit:
-                break
-            offset += limit
-            time.sleep(0.2)
-    st.success(f"Found {len(contacts)} contacts assigned to {agent_name}")
-    return contacts
-
-# ------------------------
-# Get contacts by pond
-# ------------------------
-def fetch_contacts_by_pond(api_key, pond_id):
-    if not pond_id:
-        st.error("Invalid pond ID provided.")
+def fetch_agents():
+    try:
+        res = requests.get(f"{BASE_URL}/users", headers=headers)
+        res.raise_for_status()
+        agents = res.json()
+        return [
+            {"id": a["id"], "name": a["name"]}
+            for a in agents if a.get("isAgent")
+        ]
+    except Exception as e:
+        st.error(f"Failed to fetch agents: {e}")
         return []
 
-    headers = get_auth_header(api_key)
-    url = f"https://api.followupboss.com/v1/ponds/{pond_id}/people?limit=100"
-    contacts = []
-    next_token = None
 
-    st.write(f"Fetching contacts for pond ID: `{pond_id}`")  # DEBUG LOG
+def fetch_ponds():
+    try:
+        res = requests.get(f"{BASE_URL}/ponds", headers=headers)
+        res.raise_for_status()
+        ponds = res.json().get("ponds", [])
+        return [{"id": p["id"], "name": p["name"]} for p in ponds]
+    except Exception as e:
+        st.error(f"Failed to fetch ponds: {e}")
+        return []
 
-    with st.spinner(f"Fetching contacts in pond {pond_id}..."):
-        while True:
-            params = {"limit": 100}
-            if next_token:
-                params["next"] = next_token
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error(f"Error fetching contacts by pond: {response.status_code} {response.text}")
-                break
-            data = response.json()
-            contacts.extend(data.get("people", []))
-            meta = data.get("_metadata", {})
-            next_token = meta.get("next")
-            if not next_token:
-                break
-            time.sleep(0.2)
-    st.success(f"Fetched {len(contacts)} contacts from pond")
-    return contacts
 
-# ------------------------
-# Streamlit App UI
-# ------------------------
-st.title("FUB Contacts Filter Tool")
+def fetch_contacts_by_agent(agent_id):
+    url = f"{BASE_URL}/people?assignedTo={agent_id}&limit=100"
+    res = requests.get(url, headers=headers)
+    if res.status_code != 200:
+        st.error(f"Error fetching contacts by agent: {res.text}")
+        return []
 
-api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+    return res.json().get("people", [])
 
-if api_key:
-    agents = fetch_agents(api_key)
-    ponds = fetch_ponds(api_key)
 
-    agent_names = sorted([a["name"] for a in agents if a.get("name")])
-    pond_map = {p["name"]: p["id"] for p in ponds}
+def fetch_contacts_by_pond(pond_id):
+    url = f"{BASE_URL}/ponds/{pond_id}/people?limit=100"
+    res = requests.get(url, headers=headers)
+    if res.status_code != 200:
+        st.error(f"Error fetching contacts by pond: {res.text}")
+        return []
 
-    st.write("Available Ponds & IDs:")
-    st.write(pond_map)  # DEBUG
+    return res.json().get("people", [])
 
-    filter_type = st.radio("Filter contacts by agent or pond:", ("Agent", "Pond"))
 
-    if filter_type == "Agent":
-        selected_agent = st.selectbox("Select an agent", agent_names)
-        if st.button("Fetch Contacts"):
-            contacts = fetch_contacts_by_agent(api_key, selected_agent)
-            for contact in contacts:
-                st.write(f"Name: {contact.get('name')}, assignedTo: '{selected_agent}'")
+# --- Streamlit UI ---
 
-    else:
-        pond_names = list(pond_map.keys())
-        selected_pond = st.selectbox("Select a pond", pond_names)
-        if st.button("Fetch Contacts"):
-            pond_id = pond_map.get(selected_pond)
-            contacts = fetch_contacts_by_pond(api_key, pond_id)
-            for contact in contacts:
-                st.write(f"Name: {contact.get('name')}, Pond: {selected_pond}")
+st.title("Follow Up Boss Contact Exporter")
+
+# Load agents and ponds
+agents = fetch_agents()
+ponds = fetch_ponds()
+
+agent_options = {a["name"]: a["id"] for a in agents}
+pond_options = {p["name"]: p["id"] for p in ponds}
+
+tab1, tab2 = st.tabs(["Agent", "Pond"])
+
+contacts = []
+
+with tab1:
+    agent_name = st.selectbox("Select an agent", list(agent_options.keys()))
+    if st.button("Fetch Contacts for Agent"):
+        agent_id = agent_options[agent_name]
+        contacts = fetch_contacts_by_agent(agent_id)
+
+with tab2:
+    pond_name = st.selectbox("Select a pond", list(pond_options.keys()))
+    if st.button("Fetch Contacts for Pond"):
+        pond_id = pond_options[pond_name]
+        contacts = fetch_contacts_by_pond(pond_id)
+
+# Show results
+if contacts:
+    st.success(f"Fetched {len(contacts)} contacts")
+    df = pd.DataFrame([
+        {
+            "Name": c.get("name"),
+            "Email": c.get("emails", [{}])[0].get("value", ""),
+            "Phone": c.get("phones", [{}])[0].get("value", ""),
+            "Created": c.get("created"),
+            "Stage": c.get("stage"),
+            "Assigned To": c.get("assignedTo", {}).get("name", "")
+        }
+        for c in contacts
+    ])
+    st.dataframe(df)
+
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Download CSV", csv, "contacts.csv", "text/csv")
+else:
+    st.warning("No contacts to display")
