@@ -33,20 +33,76 @@ def fetch_follow_up_boss_agents(api_key):
     st.success(f"Fetched {len(agents)} agents")
     return agents
 
-def fetch_follow_up_boss_contacts(api_key):
+def fetch_follow_up_boss_ponds(api_key):
     headers = get_auth_header(api_key)
-    url = "https://api.followupboss.com/v1/people?limit=100"
-    contacts = []
+    url = "https://api.followupboss.com/v1/ponds?limit=100"
+    ponds = []
+    next_token = None
 
-    with st.spinner("Fetching all contacts from Follow Up Boss..."):
-        while url:
-            response = requests.get(url, headers=headers)
+    with st.spinner("Fetching all ponds..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
             if response.status_code != 200:
-                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+                st.error(f"Error fetching ponds: {response.status_code} {response.text}")
+                break
+            data = response.json()
+            ponds.extend(data.get("ponds", []))
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
+    st.success(f"Fetched {len(ponds)} ponds")
+    return ponds
+
+def fetch_contacts_by_pond(api_key, pond_id):
+    headers = get_auth_header(api_key)
+    url = f"https://api.followupboss.com/v1/ponds/{pond_id}/people?limit=100"
+    contacts = []
+    next_token = None
+
+    with st.spinner(f"Fetching contacts in pond {pond_id}..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Error fetching contacts by pond: {response.status_code} {response.text}")
                 break
             data = response.json()
             contacts.extend(data.get("people", []))
-            url = data.get("links", {}).get("next")  # pagination via next link
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
+            time.sleep(0.2)
+    st.success(f"Fetched {len(contacts)} contacts from pond")
+    return contacts
+
+def fetch_all_contacts(api_key):
+    headers = get_auth_header(api_key)
+    url = "https://api.followupboss.com/v1/people?limit=100"
+    contacts = []
+    next_token = None
+
+    with st.spinner("Fetching all contacts..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Error fetching contacts: {response.status_code} {response.text}")
+                break
+            data = response.json()
+            contacts.extend(data.get("people", []))
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
             time.sleep(0.2)
     st.success(f"Fetched {len(contacts)} contacts total")
     return contacts
@@ -85,49 +141,36 @@ def export_to_csv(contacts, filename="contacts.csv"):
         key="download-csv"
     )
 
-def is_unassigned(contact):
-    assigned = contact.get("assignedTo")
-    # None or empty or whitespace-only means unassigned => Brighton Office Pond
-    if assigned is None:
-        return True
-    if isinstance(assigned, str) and assigned.strip() == "":
-        return True
-    return False
-
-st.title("📇 Follow Up Boss Contact Exporter")
+st.title("📇 Follow Up Boss Contact Exporter with Pond Support")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
 
 if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
-    # Map agents by name string for filtering contacts by assigned agent name
-    agent_map = {f"{a['name']} ({a['email']})": a["name"] for a in agents}
+    ponds = fetch_follow_up_boss_ponds(api_key)
 
-    options = ["All Agents", "Brighton Office Pond"] + list(agent_map.keys())
-    selected_option = st.selectbox("Filter contacts by:", options)
+    agent_map = {f"{a['name']} ({a['email']})": a["name"] for a in agents}
+    pond_map = {p["name"]: p["id"] for p in ponds}
+
+    options = ["All Contacts"] + list(agent_map.keys()) + list(pond_map.keys())
+    selected_option = st.selectbox("Filter contacts by agent or pond:", options)
 
     contacts_to_export = None
 
-    if st.button("Debug unassigned contacts"):
-        all_contacts = fetch_follow_up_boss_contacts(api_key)
-        unassigned = [c for c in all_contacts if is_unassigned(c)]
-        st.write(f"Found {len(unassigned)} unassigned contacts (Brighton Office Pond)")
-        for i, c in enumerate(unassigned[:20]):
-            st.write(f"{i+1}. Name: {c.get('name')}, assignedTo: {repr(c.get('assignedTo'))}")
-
     if st.button("Fetch Contacts"):
-        all_contacts = fetch_follow_up_boss_contacts(api_key)
-
-        if selected_option == "All Agents":
-            filtered_contacts = all_contacts
-        elif selected_option == "Brighton Office Pond":
-            filtered_contacts = [c for c in all_contacts if is_unassigned(c)]
-        else:
+        if selected_option == "All Contacts":
+            contacts_to_export = fetch_all_contacts(api_key)
+        elif selected_option in agent_map:
+            all_contacts = fetch_all_contacts(api_key)
             agent_name = agent_map[selected_option]
-            filtered_contacts = [c for c in all_contacts if c.get("assignedTo") == agent_name]
+            contacts_to_export = [c for c in all_contacts if c.get("assignedTo") == agent_name]
+        elif selected_option in pond_map:
+            pond_id = pond_map[selected_option]
+            contacts_to_export = fetch_contacts_by_pond(api_key, pond_id)
+        else:
+            st.error("Invalid selection")
 
-        st.write(f"Contacts matched: {len(filtered_contacts)}")
-        contacts_to_export = filtered_contacts
+        st.write(f"Contacts matched: {len(contacts_to_export)}")
 
     if contacts_to_export:
         export_to_csv(contacts_to_export, filename=f"{selected_option.replace(' ', '_')}_contacts.csv")
