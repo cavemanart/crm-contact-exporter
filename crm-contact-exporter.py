@@ -1,123 +1,73 @@
 import streamlit as st
 import requests
-import csv
-import base64
-import time
+import pandas as pd
+from io import BytesIO
 
-CSV_FILE = "contacts.csv"
+st.title("Follow Up Boss Contact Export Tool")
 
-# 🔁 Fetch all agents using pagination
-def fetch_follow_up_boss_agents(api_key):
-    headers = {
-        "Authorization": "Basic " + base64.b64encode(f"{api_key}:".encode()).decode()
-    }
-    url = "https://api.followupboss.com/v1/users"
-    agents = []
-    next_token = None
-
-    with st.spinner("Fetching all agents..."):
-        while True:
-            params = {"limit": 100}
-            if next_token:
-                params["next"] = next_token
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error(f"Error fetching agents: {response.status_code} {response.text}")
-                break
-            data = response.json()
-            agents.extend(data.get("users", []))
-            meta = data.get("_metadata", {})
-            next_token = meta.get("next")
-            if not next_token:
-                break
-
-    st.success(f"Fetched {len(agents)} agents")
-    return agents
-
-# 🔁 Fetch contacts, optionally filtered by agent or unassigned only
-def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None, unassigned_only=False):
-    headers = {
-        "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
-    }
-    url = "https://api.followupboss.com/v1/people"
-    contacts = []
-    offset = 0
-    with st.spinner("Fetching contacts from Follow Up Boss..."):
-        while len(contacts) < limit:
-            params = {"limit": 100, "offset": offset}
-            if assigned_user_id:
-                params["assignedUserId"] = assigned_user_id
-            response = requests.get(url, headers=headers, params=params)
-            if response.status_code != 200:
-                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
-                break
-            batch = response.json().get("people", [])
-            if not batch:
-                break
-
-            if unassigned_only:
-                batch = [c for c in batch if not c.get("assignedTo")]
-
-            contacts.extend(batch)
-            offset += 100
-            st.progress(min(len(contacts) / limit, 1.0))
-            time.sleep(0.2)
-    return contacts[:limit]
-
-# ✅ Export to CSV
-def export_to_csv(contacts, filename=CSV_FILE):
-    if not contacts:
-        st.warning("No contacts to export.")
-        return
-
-    with open(filename, mode="w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        headers = ["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"]
-        writer.writerow(headers)
-        for c in contacts:
-            name = c.get("name", "")
-            email = ", ".join(e["value"] for e in c.get("emails", []))
-            phone = ", ".join(p["value"] for p in c.get("phones", []))
-
-            address_obj = c.get("addresses", [])
-            if address_obj and isinstance(address_obj, list) and address_obj[0]:
-                addr = address_obj[0]
-                address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}"
-            else:
-                address = ""
-
-            assigned = c.get("assignedTo")
-            agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
-            stage = c.get("stage", "")
-            writer.writerow([name, email, phone, address, agent, stage])
-
-    st.success(f"Exported {len(contacts)} contacts to {filename}")
-
-    with open(filename, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
-        st.markdown(href, unsafe_allow_html=True)
-
-# 🚀 Streamlit UI
-st.title("📇 Follow Up Boss Contact Exporter")
-
+# Step 1: Get API key input
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
-limit = st.number_input("Number of contacts to fetch", min_value=1, max_value=5000, value=500)
+
+# Step 2: Fetch agents
+@st.cache_data
+def fetch_agents(api_key):
+    url = "https://api.followupboss.com/v1/users"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    res = requests.get(url, headers=headers)
+    if res.status_code != 200:
+        st.error(f"Failed to fetch agents: {res.text}")
+        return []
+    users = res.json().get("users", [])
+    agent_map = {user["id"]: user["email"] for user in users if user.get("role") == "Agent"}
+    return agent_map
 
 if api_key:
-    agents = fetch_follow_up_boss_agents(api_key)
-    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
-    agent_names = ["All Agents", "Unassigned Only"] + list(agent_map.keys())
-    selected_agent = st.selectbox("Filter contacts by agent", agent_names)
+    agents = fetch_agents(api_key)
+    agent_options = list(agents.values()) + ["Unassigned"]
+    selected_agents = st.multiselect("Select Agents to Export", agent_options)
 
-    assigned_user_id = None
-    unassigned_only = False
+    if st.button("Export Contacts"):
+        headers = {"Authorization": f"Bearer {api_key}"}
+        base_url = "https://api.followupboss.com/v1/people"
 
-    if selected_agent == "Unassigned Only":
-        unassigned_only = True
-    elif selected_agent != "All Agents":
-        assigned_user_id = agent_map[selected_agent]
+        all_contacts = []
+        next_url = base_url
 
-    if st.button("Fetch and Export Contacts"):
-        contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id, unassigned_only)
-        export_to_csv(contacts)
+        with st.spinner("Fetching contacts..."):
+            while next_url:
+                res = requests.get(next_url, headers=headers)
+                if res.status_code != 200:
+                    st.error(f"Error fetching contacts: {res.text}")
+                    break
+                data = res.json()
+                all_contacts.extend(data.get("people", []))
+                next_url = data.get("nextLink")
+
+        # Step 3: Sort by selected agents
+        for selected in selected_agents:
+            if selected == "Unassigned":
+                filtered = [p for p in all_contacts if not p.get("assignedUserId")]
+                filename = "unassigned_contacts.csv"
+            else:
+                agent_id = next((k for k, v in agents.items() if v == selected), None)
+                filtered = [p for p in all_contacts if p.get("assignedUserId") == agent_id]
+                filename = f"{selected.replace('@', '_').replace('.', '_')}_contacts.csv"
+
+            if filtered:
+                df = pd.DataFrame([{
+                    "name": f"{p.get('firstName', '')} {p.get('lastName', '')}".strip(),
+                    "email": p.get("primaryEmail", ""),
+                    "phone": p.get("primaryPhone", ""),
+                    "address": p.get("address', {}).get('street', '')}",
+                    "assigned_agent_id": p.get("assignedUserId", ""),
+                    "stage": p.get("stage", "")
+                } for p in filtered])
+                csv = df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=f"Download CSV for {selected}",
+                    data=csv,
+                    file_name=filename,
+                    mime="text/csv"
+                )
+            else:
+                st.info(f"No contacts found for {selected}.")
