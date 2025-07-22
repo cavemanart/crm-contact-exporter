@@ -99,13 +99,23 @@ if api_key:
 
     contacts_to_export = None
 
+    # Debug button to inspect assignedTo fields of first 20 contacts
+    if st.button("Debug AssignedTo Fields"):
+        all_contacts = fetch_follow_up_boss_contacts(api_key)
+        for i, c in enumerate(all_contacts[:20]):
+            st.write(f"{i+1}. Name: {c.get('name')}, assignedTo: {repr(c.get('assignedTo'))}")
+
     if st.button("Fetch Contacts"):
         all_contacts = fetch_follow_up_boss_contacts(api_key)
+
+        def is_unassigned(contact):
+            assigned = contact.get("assignedTo")
+            return assigned is None or assigned == {} or assigned == ""
 
         if selected_option == "All Agents":
             filtered_contacts = all_contacts
         elif selected_option == "Brighton Office Pond":
-            filtered_contacts = [c for c in all_contacts if not c.get("assignedTo")]
+            filtered_contacts = [c for c in all_contacts if is_unassigned(c)]
         else:
             agent_id = agent_map[selected_option]
             filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
