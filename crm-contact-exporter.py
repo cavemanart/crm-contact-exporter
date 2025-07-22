@@ -5,12 +5,10 @@ import base64
 import time
 from io import StringIO
 
-# Encode API key for Basic Auth header
 def get_auth_header(api_key):
     token = base64.b64encode(f"{api_key}:".encode()).decode()
     return {"Authorization": f"Basic {token}"}
 
-# Fetch all agents
 def fetch_follow_up_boss_agents(api_key):
     headers = get_auth_header(api_key)
     url = "https://api.followupboss.com/v1/users"
@@ -35,7 +33,6 @@ def fetch_follow_up_boss_agents(api_key):
     st.success(f"Fetched {len(agents)} agents")
     return agents
 
-# Fetch all contacts with nextLink pagination
 def fetch_follow_up_boss_contacts(api_key):
     headers = get_auth_header(api_key)
     url = "https://api.followupboss.com/v1/people?limit=100"
@@ -50,11 +47,10 @@ def fetch_follow_up_boss_contacts(api_key):
             data = response.json()
             contacts.extend(data.get("people", []))
             url = data.get("links", {}).get("next")
-            time.sleep(0.2)  # avoid hitting rate limits
+            time.sleep(0.2)
     st.success(f"Fetched {len(contacts)} contacts total")
     return contacts
 
-# Export contacts to CSV with Pool column
 def export_to_csv(contacts, filename="contacts.csv"):
     if not contacts:
         st.warning("No contacts to export.")
@@ -62,7 +58,7 @@ def export_to_csv(contacts, filename="contacts.csv"):
 
     output = StringIO()
     writer = csv.writer(output)
-    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent", "Pool"]
+    headers = ["Name", "Email", "Phone", "Address", "Stage", "Assigned Agent"]
     writer.writerow(headers)
 
     for c in contacts:
@@ -78,8 +74,7 @@ def export_to_csv(contacts, filename="contacts.csv"):
         stage = c.get("stage", "")
         assigned = c.get("assignedTo")
         assigned_agent = assigned.get("name", "") if isinstance(assigned, dict) else ""
-        pool = c.get("pool", "")
-        writer.writerow([name, email, phone, address, stage, assigned_agent, pool])
+        writer.writerow([name, email, phone, address, stage, assigned_agent])
 
     st.success(f"Exported {len(contacts)} contacts to {filename}")
 
@@ -91,7 +86,6 @@ def export_to_csv(contacts, filename="contacts.csv"):
         key="download-csv"
     )
 
-# Streamlit UI
 st.title("📇 Follow Up Boss Contact Exporter")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
@@ -100,7 +94,6 @@ if api_key:
     agents = fetch_follow_up_boss_agents(api_key)
     agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
 
-    # Dropdown options — removed Unassigned
     options = ["All Agents", "Brighton Office Pond"] + list(agent_map.keys())
     selected_option = st.selectbox("Filter contacts by:", options)
 
@@ -112,9 +105,8 @@ if api_key:
         if selected_option == "All Agents":
             filtered_contacts = all_contacts
         elif selected_option == "Brighton Office Pond":
-            filtered_contacts = [c for c in all_contacts if c.get("pool") == "Brighton Office Pond"]
+            filtered_contacts = [c for c in all_contacts if not c.get("assignedTo")]
         else:
-            # Filter by selected agent ID
             agent_id = agent_map[selected_option]
             filtered_contacts = [c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id]
 
