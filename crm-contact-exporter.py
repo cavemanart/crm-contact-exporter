@@ -1,98 +1,87 @@
 import streamlit as st
 import requests
 import csv
-from io import StringIO
+import io
 
-# === CONFIGURATION ===
-st.set_page_config(page_title="Follow Up Boss Contact Exporter", layout="wide")
-
-st.title("📤 Follow Up Boss Contact Exporter")
-st.markdown("Export your contacts from Follow Up Boss as a CSV file filtered by tag.")
-
-# === INPUT FIELDS ===
-api_key = st.text_input("🔑 API Key", type="password")
-tag_filter = st.text_input("🏷️ Tag Filter (optional)", value="BRIGHTONPOND")
-limit = st.number_input("🔢 Max Contacts to Fetch", min_value=10, max_value=10000, value=500, step=100)
-
-# === CONTACT FETCH FUNCTION ===
-def fetch_follow_up_boss_contacts(api_key, limit=None, assigned_user_id=None, tag_filter=None):
-    headers = {
-        "Authorization": f"Bearer {api_key}"
-    }
-
+# --- FUB API Helper ---
+def fetch_contacts(api_key, limit=5000):
     url = "https://api.followupboss.com/v1/people"
-    params = {"limit": 100, "offset": 0}
-    if assigned_user_id:
-        params["assignedUserId"] = assigned_user_id
-
-    all_contacts = []
+    headers = {"Authorization": f"Bearer {api_key}"}
+    contacts = []
+    offset = 0
 
     while True:
+        params = {"limit": 100, "offset": offset}
         response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
+        if response.status_code != 200:
+            st.error(f"Error fetching contacts: {response.status_code} - {response.text}")
+            break
         data = response.json()
-        contacts = data.get("people", [])
-
-        # Filter by tag if specified (assuming tags are list of strings)
-        if tag_filter:
-            contacts = [c for c in contacts if any((tag or "").upper() == tag_filter.upper() for tag in c.get("tags", []))]
-
-        all_contacts.extend(contacts)
-
-        if limit and len(all_contacts) >= limit:
+        batch = data.get("people", [])
+        contacts.extend(batch)
+        if len(batch) < 100 or len(contacts) >= limit:
             break
+        offset += 100
+    return contacts
 
-        if not data.get("people") or len(contacts) < 100:
-            break
+# --- Filter Contacts by Tag ---
+def filter_contacts_by_tag(contacts, tag_filter):
+    filtered = []
+    for contact in contacts:
+        tags = contact.get("tags", [])
+        for tag in tags:
+            if isinstance(tag, dict) and tag.get("name", "").upper() == tag_filter.upper():
+                filtered.append(contact)
+                break
+    return filtered
 
-        params["offset"] += 100
-
-    return all_contacts[:limit] if limit else all_contacts
-
-# === EXPORT FUNCTION ===
-def contacts_to_csv(contacts):
-    output = StringIO()
+# --- Export to CSV ---
+def export_contacts_to_csv(contacts):
+    output = io.StringIO()
     writer = csv.writer(output)
-    headers = ["Name", "Email", "Phone", "Tags", "Stage", "Source", "Assigned To", "Street", "City", "State", "Zip"]
+    headers = ["Name", "Email", "Phone", "Stage", "Tags", "Assigned To"]
     writer.writerow(headers)
-
     for c in contacts:
         name = c.get("name", "")
-        emails = ", ".join([e.get("value", "") for e in c.get("emails", [])])
-        phones = ", ".join([p.get("value", "") for p in c.get("phones", [])])
-        tags = ", ".join(c.get("tags", []))  # tags are strings
+        email = c.get("emails", [{}])[0].get("value", "")
+        phone = c.get("phones", [{}])[0].get("value", "")
         stage = c.get("stage", "")
-        source = c.get("source", "")
+        tags = ", ".join([t.get("name", "") for t in c.get("tags", [])])
         assigned_to = c.get("assignedTo", {}).get("name", "")
-        address = c.get("addresses", [{}])[0]
-        street = address.get("street", "")
-        city = address.get("city", "")
-        state = address.get("state", "")
-        zip_code = address.get("zipCode", "")
-
-        writer.writerow([name, emails, phones, tags, stage, source, assigned_to, street, city, state, zip_code])
-
+        writer.writerow([name, email, phone, stage, tags, assigned_to])
     return output.getvalue()
 
-# === EXPORT BUTTON ===
-if st.button("🚀 Export Contacts"):
-    if not api_key:
-        st.error("Please enter your Follow Up Boss API key.")
-    else:
-        with st.spinner("Fetching contacts..."):
-            try:
-                contacts = fetch_follow_up_boss_contacts(api_key, limit=limit, tag_filter=tag_filter)
-                if not contacts:
-                    st.warning("No contacts found with that tag.")
-                else:
-                    csv_data = contacts_to_csv(contacts)
-                    st.success(f"Exported {len(contacts)} contacts.")
+# --- Streamlit UI ---
+st.title("📤 FUB Contact Exporter — Filter by Tag")
 
-                    st.download_button(
-                        label="📥 Download CSV",
-                        data=csv_data,
-                        file_name="fub_contacts.csv",
-                        mime="text/csv"
-                    )
-            except Exception as e:
-                st.error(f"Error fetching contacts: {e}")
+# API Key input
+api_key = st.text_input("🔑 Enter your Follow Up Boss API Key", type="password")
+
+# Tag filter input
+tag_filter = st.text_input("🏷️ Tag to filter by (case-insensitive)", value="BRIGHTONPOND")
+
+# Agent reference display (optional, static info)
+st.markdown("**Example Agent (for reference only)**")
+st.markdown("- Eric Freeman")
+
+if api_key and tag_filter:
+    with st.spinner("Fetching and filtering contacts..."):
+        all_contacts = fetch_contacts(api_key)
+        tagged_contacts = filter_contacts_by_tag(all_contacts, tag_filter)
+
+    st.success(f"✅ Found {len(tagged_contacts)} contacts with tag '{tag_filter}'")
+
+    if tagged_contacts:
+        csv_data = export_contacts_to_csv(tagged_contacts)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_data,
+            file_name=f"{tag_filter.lower()}_contacts.csv",
+            mime="text/csv"
+        )
+
+        st.subheader("🔍 Sample Contacts Preview")
+        for c in tagged_contacts[:5]:
+            st.write(f"- **{c.get('name')}** | {c.get('stage')} | Assigned to: {c.get('assignedTo', {}).get('name', '')}")
+    else:
+        st.warning(f"No contacts found with tag '{tag_filter}'.")
