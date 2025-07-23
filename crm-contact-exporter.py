@@ -1,147 +1,124 @@
 import streamlit as st
 import requests
-import base64
 import csv
+import base64
 import time
 
-# === Config ===
-CSV_FILE = "contacts_export.csv"
-FUB_BASE_URL = "https://api.followupboss.com/v1"
+CSV_FILE = "contacts.csv"
 
-# === API Helpers ===
-def get_headers(api_key):
-    return {
+# 🔁 Fetch all agents using pagination
+def fetch_follow_up_boss_agents(api_key):
+    headers = {
         "Authorization": "Basic " + base64.b64encode(f"{api_key}:".encode()).decode()
     }
+    url = "https://api.followupboss.com/v1/users"
+    agents = []
+    next_token = None
 
-# Fetch agents
-def fetch_follow_up_boss_agents(api_key):
-    response = requests.get(f"{FUB_BASE_URL}/users", headers=get_headers(api_key))
-    if response.status_code == 200:
-        return response.json().get("users", [])
-    return []
+    with st.spinner("Fetching all agents..."):
+        while True:
+            params = {"limit": 100}
+            if next_token:
+                params["next"] = next_token
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Error fetching agents: {response.status_code} {response.text}")
+                break
+            data = response.json()
+            agents.extend(data.get("users", []))
+            meta = data.get("_metadata", {})
+            next_token = meta.get("next")
+            if not next_token:
+                break
 
-# Fetch ponds
-def fetch_ponds(api_key):
-    response = requests.get(f"{FUB_BASE_URL}/ponds", headers=get_headers(api_key))
-    if response.status_code == 200:
-        return response.json().get("ponds", [])
-    return []
+    st.success(f"Fetched {len(agents)} agents")
+    return agents
 
-# Paginated fetch of all contacts
-def fetch_contacts(api_key):
-    all_contacts = []
-    limit = 100
+# 🔁 Fetch contacts, optionally filtered by agent
+def fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id=None, tag_filter=None):
+    headers = {
+        "Authorization": "Basic " + base64.b64encode((api_key + ":").encode()).decode()
+    }
+    url = "https://api.followupboss.com/v1/people"
+    contacts = []
     offset = 0
 
-    while True:
-        response = requests.get(
-            f"{FUB_BASE_URL}/people",
-            headers=get_headers(api_key),
-            params={"limit": limit, "offset": offset}
-        )
-        if response.status_code != 200:
-            break
+    with st.spinner("Fetching contacts from Follow Up Boss..."):
+        while len(contacts) < limit:
+            params = {"limit": 100, "offset": offset}
+            if assigned_user_id:
+                params["assignedUserId"] = assigned_user_id
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                st.error(f"Follow Up Boss API error: {response.status_code} {response.text}")
+                break
+            batch = response.json().get("people", [])
+            if not batch:
+                break
+            contacts.extend(batch)
+            offset += 100
+            st.progress(min(len(contacts) / limit, 1.0))
+            time.sleep(0.2)
 
-        data = response.json()
-        contacts = data.get("people", [])
-        if not contacts:
-            break
+    # Apply tag filter locally
+    if tag_filter:
+        contacts = [
+            c for c in contacts
+            if any(tag.get("name", "").upper() == tag_filter.upper() for tag in c.get("tags", []))
+        ]
 
-        all_contacts.extend(contacts)
-        offset += limit
+    return contacts[:limit]
 
-        time.sleep(0.3)  # throttle slightly to avoid hitting rate limits
-
-    return all_contacts
-
-# Export contacts to CSV
+# ✅ Export to CSV
 def export_to_csv(contacts, filename=CSV_FILE):
     if not contacts:
+        st.warning("No contacts to export.")
         return
 
-    keys = set()
-    for contact in contacts:
-        keys.update(contact.keys())
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        headers = ["Name", "Email", "Phone", "Address", "Assigned Agent", "Stage"]
+        writer.writerow(headers)
+        for c in contacts:
+            name = c.get("name", "")
+            email = ", ".join(e["value"] for e in c.get("emails", []))
+            phone = ", ".join(p["value"] for p in c.get("phones", []))
 
-    with open(filename, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=sorted(keys))
-        writer.writeheader()
-        writer.writerows(contacts)
+            address_obj = c.get("addresses", [])
+            if address_obj and isinstance(address_obj, list) and address_obj[0]:
+                addr = address_obj[0]
+                address = f"{addr.get('street', '')}, {addr.get('city', '')}, {addr.get('state', '')} {addr.get('zip', '')}"
+            else:
+                address = ""
+
+            assigned = c.get("assignedTo")
+            agent = assigned["name"] if isinstance(assigned, dict) and "name" in assigned else ""
+            stage = c.get("stage", "")
+            writer.writerow([name, email, phone, address, agent, stage])
 
     st.success(f"Exported {len(contacts)} contacts to {filename}")
-    with open(filename, "rb") as f:
-        st.download_button("⬇️ Download CSV", f, file_name=filename, mime="text/csv")
 
-# === Streamlit UI ===
+    with open(filename, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📁 Download CSV</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
+# 🚀 Streamlit UI
 st.title("📇 Follow Up Boss Contact Exporter")
 
 api_key = st.text_input("Enter your Follow Up Boss API Key", type="password")
+limit = st.number_input("Number of contacts to fetch", min_value=1, max_value=5000, value=500)
+tag_filter_enabled = st.checkbox("Only show contacts with BRIGHTONPOND tag", value=True)
 
 if api_key:
-    with st.spinner("Fetching agents and ponds..."):
-        agents = fetch_follow_up_boss_agents(api_key)
-        ponds = fetch_ponds(api_key)
+    agents = fetch_follow_up_boss_agents(api_key)
+    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents}
+    agent_names = ["All Agents"] + list(agent_map.keys())
+    selected_agent = st.selectbox("Filter contacts by agent", agent_names)
 
-    agent_map = {f"{a['name']} ({a['email']})": a["id"] for a in agents if a.get("email")}
-    pond_map = {p["name"]: p["id"] for p in ponds}
+    assigned_user_id = None if selected_agent == "All Agents" else agent_map[selected_agent]
+    tag_filter = "BRIGHTONPOND" if tag_filter_enabled else None
 
-    filter_type = st.radio("Filter contacts by:", ["Agent", "Pond", "Tag"])
-
-    selected_option = None
-    if filter_type == "Agent":
-        agent_options = ["All Agents"] + list(agent_map.keys())
-        selected_option = st.selectbox("Select Agent:", agent_options)
-
-    elif filter_type == "Pond":
-        if not pond_map:
-            st.warning("No ponds found. Check permissions.")
-        else:
-            selected_option = st.selectbox("Select Pond:", list(pond_map.keys()))
-
-    elif filter_type == "Tag":
-        with st.spinner("Fetching tags from all contacts..."):
-            all_contacts = fetch_contacts(api_key)
-            tag_set = set()
-            for c in all_contacts:
-                for tag in c.get("tags", []):
-                    tag_set.add(tag.strip())
-            tag_options = sorted(tag_set)
-        if not tag_options:
-            st.warning("No tags found.")
-        else:
-            selected_option = st.selectbox("Select Tag:", tag_options)
-
-    contacts_to_export = []
-
-    if st.button("Fetch Contacts"):
-        with st.spinner("Fetching contacts..."):
-            all_contacts = fetch_contacts(api_key)
-
-        if filter_type == "Agent":
-            if selected_option == "All Agents":
-                filtered_contacts = all_contacts
-            else:
-                agent_id = agent_map[selected_option]
-                filtered_contacts = [
-                    c for c in all_contacts if c.get("assignedTo", {}).get("id") == agent_id
-                ]
-
-        elif filter_type == "Pond":
-            pond_id = pond_map.get(selected_option)
-            filtered_contacts = [
-                c for c in all_contacts if c.get("pond", {}).get("id") == pond_id
-            ]
-
-        elif filter_type == "Tag":
-            filtered_contacts = [
-                c for c in all_contacts if selected_option.strip().lower() in
-                [tag.strip().lower() for tag in c.get("tags", [])]
-            ]
-
-        st.write(f"✅ Contacts matched: {len(filtered_contacts)}")
-        contacts_to_export = filtered_contacts
-
-    if contacts_to_export:
-        safe_filename = selected_option.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "") if selected_option else "All"
-        export_to_csv(contacts_to_export, filename=f"{filter_type}_{safe_filename}_contacts.csv")
+    if st.button("Fetch and Export Contacts"):
+        contacts = fetch_follow_up_boss_contacts(api_key, limit, assigned_user_id, tag_filter)
+        export_to_csv(contacts)
